@@ -789,6 +789,35 @@ function Select-MoonTerminalTarget([string]$sid, [int]$terminalPid, [string]$ter
     return [IntPtr]::Zero
   }
 }
+# Capture is deliberately separate from selection: while a Claude hook holds the short
+# marker on-screen, Update-Card caches the exact AutomationElement without changing focus.
+# The ack lets the hook return as soon as that durable in-memory binding exists.
+function Capture-MoonTerminalTarget([string]$sid, [int]$claudePid, [string]$terminalKey, [string]$recordPath) {
+  if (-not $sid -or $claudePid -le 0 -or $terminalKey -notmatch '^[0-9a-f]{10}$') { return $false }
+  try {
+    if ($script:jumpTabCache.ContainsKey($sid)) {
+      $cached = $script:jumpTabCache[$sid]
+      if ($cached.Key -ceq $terminalKey -and [Lp]::IsWin($cached.Window)) {
+        [IO.File]::WriteAllText("$recordPath.taback", "$PID`t$terminalKey", [Text.Encoding]::ASCII)
+        return $true
+      }
+      [void]$script:jumpTabCache.Remove($sid)
+    }
+    $gp = Get-Process -Id $claudePid -ErrorAction SilentlyContinue
+    if (-not $gp -or $gp.ProcessName -ne 'claude') { return $false }
+    [void](Find-HostWindow $claudePid)
+    $terminalPid = 0
+    if ($script:jumpTerminalPid.ContainsKey($claudePid)) { $terminalPid = [int]$script:jumpTerminalPid[$claudePid] }
+    if ($terminalPid -le 0) { return $false }
+    $found = Find-MoonTerminalTarget $terminalPid $terminalKey
+    if (-not $found) { return $false }
+    $script:jumpTabCache[$sid] = @{ TerminalPid = $terminalPid; Key = $terminalKey; Window = $found.Window; Tab = $found.Tab }
+    $ack = "$PID`t$terminalKey"
+    [IO.File]::WriteAllText("$recordPath.taback", $ack, [Text.Encoding]::ASCII)
+    LogEv ('tab captured sid={0} pid={1} wt={2} hwnd={3}' -f $sid, $claudePid, $terminalPid, $found.Window.ToInt64())
+    return $true
+  } catch { return $false }
+}
 # Companion-extension handshake (tab-level jump inside VS Code): after a successful
 # window-level activation, drop the session's ancestor PID chain into a UNIQUE
 # jump-req-<nonce>.json at the data ROOT (not sessions\ -- stays out of the
@@ -1358,6 +1387,8 @@ $script:jumpCache = @{}; $script:lastWarm = $now0   # claudePid -> non-WT host H
 $script:jumpChain = @{}   # claudePid -> ancestor PID chain from that walk (consumed by the VS Code companion handshake)
 $script:jumpTerminalPid = @{}   # claudePid -> shared WindowsTerminal.exe PID (never itself activated blindly)
 $script:jumpTabCache = @{}      # session id -> exact UI Automation tab + owning Terminal window
+$script:jumpCaptureEpoch = @{}  # session id -> latest record epoch offered for transient-marker capture
+$script:jumpCaptureUntil = @{}  # session id -> bounded retry deadline for that marker
 $script:lastIntr = $now0
 $script:lastBg = $now0                                   # background-running detection cadence
 $script:lastSpriteCheck = $now0                          # lunar asset reload cadence
@@ -1430,7 +1461,21 @@ function Update-Card {
     # (first-prompt title, rename lock, model badge) must survive so a revived session
     # keeps its identity; physical deletion only after 7 days of silence
     $idleMs = $now - $epoch
-    if ($idleMs -gt 604800000) { Remove-Item $f.FullName, "$($f.FullName).dismiss", "$($f.FullName).titlelock", "$($f.FullName).pending" -Force -ErrorAction SilentlyContinue; continue }
+    if ($idleMs -gt 604800000) { Remove-Item $f.FullName, "$($f.FullName).dismiss", "$($f.FullName).titlelock", "$($f.FullName).pending", "$($f.FullName).taback" -Force -ErrorAction SilentlyContinue; continue }
+    # The hook writes the record while its unique tab marker is still visible, then waits
+    # briefly for this capture. Retry only inside that event's bounded window; after it
+    # expires we stop scanning rather than burning CIM/UIA work on a vanished marker.
+    if ($p.Count -ge 12 -and $p[11] -match '^[0-9a-f]{10}$') {
+      $capEpoch = "$($p[4])"
+      if (-not $script:jumpCaptureEpoch.ContainsKey($f.Name) -or $script:jumpCaptureEpoch[$f.Name] -ne $capEpoch) {
+        $script:jumpCaptureEpoch[$f.Name] = $capEpoch
+        $script:jumpCaptureUntil[$f.Name] = $now + 1400
+      }
+      if ($now -le [long]$script:jumpCaptureUntil[$f.Name]) {
+        $capPid = 0; [void][int]::TryParse(($p[6] + ''), [ref]$capPid)
+        if (Capture-MoonTerminalTarget $f.Name $capPid $p[11] $f.FullName) { $script:jumpCaptureUntil[$f.Name] = 0 }
+      }
+    }
     $jumpList += [pscustomobject]@{ sid=$f.Name; key=$p[0]; epoch=$epoch; cpid=$(if($p.Count -ge 7){$p[6]}else{''}) }
     if ($idleMs -gt 1800000) { continue }
     $dp = "$($f.FullName).dismiss"

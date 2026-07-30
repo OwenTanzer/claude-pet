@@ -75,7 +75,7 @@ Claude Code の進捗を見守る、デスクトップの小さなマスコッ�
 - 新开的会话自动就是新版,无需操作。
 
 ### 已知限制
-- **点卡片可精确跳到对应会话**:单击卡片行会把该会话的宿主窗口(Windows Terminal / VS Code / PowerShell)拉到前台,最小化了会先还原。Windows Terminal 会为每个 Claude 会话写入一个经过哈希的短标记,因此多个窗口或标签页并存时也会先选中正确标签。VS Code 用户可另装配套扩展([`vscode-ext/claude-pet-jump`](vscode-ext/claude-pet-jump/),可选),以便在窗口内聚焦该会话的终端标签。标记缺失或不唯一时,卡片会摇头示意,不会跳到其它 AI 的终端。
+- **点卡片可精确跳到对应会话**:单击卡片行会把该会话的宿主窗口(Windows Terminal / VS Code / PowerShell)拉到前台,最小化了会先还原。Windows Terminal 中,每个 Claude 会话会短暂显示一个经过哈希的标记,由 Moon 在 Claude 恢复动态标题前捕获并记住该标签;因此多个窗口或标签页并存时也会选中正确目标。VS Code 用户可另装配套扩展([`vscode-ext/claude-pet-jump`](vscode-ext/claude-pet-jump/),可选),以便在窗口内聚焦该会话的终端标签。标记缺失、重复或尚未捕获时,卡片会摇头示意,不会跳到其它 AI 的终端。
 - **仅 Windows**(用 `powershell.exe` + WinForms)。
 - **原生 GUI 聊天面板可能不出卡**:在终端里跑 Claude Code 一定可用;扩展的图形聊天面板若不触发钩子/不产生 `claude.exe`,该会话可能不出卡(不影响其它终端会话)。
 - **卡片名与终端标签名不自动同步**:卡片标题默认取你的第一句话,与终端标签名各自独立。想让它俩一致,**点卡片行上的 ✎ 手动改名**即可(改完会锁定,不被自动覆盖)。
@@ -150,7 +150,7 @@ That updates the **current session**.
 - new sessions get the latest automatically — nothing to do.
 
 ### Known limitations
-- **Clicking a card jumps to that exact session**: a click brings the session's host window (Windows Terminal / VS Code / PowerShell) to the foreground, restoring it if minimized. In Windows Terminal, each Claude session writes a short hashed marker so Moon can select the correct tab even across several Terminal windows. VS Code users can optionally install the companion extension ([`vscode-ext/claude-pet-jump`](vscode-ext/claude-pet-jump/)) to focus the matching integrated-terminal tab. If the marker is missing or ambiguous, the card shakes its head instead of jumping to another AI's terminal.
+- **Clicking a card jumps to that exact session**: a click brings the session's host window (Windows Terminal / VS Code / PowerShell) to the foreground, restoring it if minimized. In Windows Terminal, each Claude session briefly exposes a short hashed marker; Moon captures and remembers the exact tab before Claude resumes its dynamic title, so targeting remains precise across several Terminal windows. VS Code users can optionally install the companion extension ([`vscode-ext/claude-pet-jump`](vscode-ext/claude-pet-jump/)) to focus the matching integrated-terminal tab. If the marker is missing, duplicated, or not yet captured, the card shakes its head instead of jumping to another AI's terminal.
 - **Windows only** (uses `powershell.exe` + WinForms).
 - **The native GUI chat panel may not show a card**: terminal-hosted Claude Code always works; the extension's GUI panel may not (if it doesn't fire hooks / spawn `claude.exe`). Other terminal sessions are unaffected.
 - **Card name and terminal tab name don't auto-sync**: the card title defaults to your first prompt and is independent of the tab name. To make them match, **rename the card with the ✎ on its row** (the new name is locked and won't be overwritten).
@@ -225,7 +225,7 @@ Claude Code で**順に**実行(`install` では user scope を選択):
 - 新しいセッションは自動的に最新——操作不要。
 
 ### 既知の制限
-- **カードクリックで該当セッションへ正確に移動**:クリックすると、そのセッションのホストウィンドウ(Windows Terminal / VS Code / PowerShell)が前面に出ます(最小化時は復元)。Windows Terminal では Claude セッションごとに短いハッシュ済みマーカーを書き込み、複数のウィンドウやタブがあっても正しいタブを選択します。VS Code では連携拡張([`vscode-ext/claude-pet-jump`](vscode-ext/claude-pet-jump/)、任意)で対応する統合ターミナルをフォーカスできます。マーカーが見つからない、または一意でない場合は首を振り、別の AI のターミナルへ推測で移動しません。
+- **カードクリックで該当セッションへ正確に移動**:クリックすると、そのセッションのホストウィンドウ(Windows Terminal / VS Code / PowerShell)が前面に出ます(最小化時は復元)。Windows Terminal では Claude セッションごとに短いハッシュ済みマーカーを一時表示し、Claude が動的タイトルへ戻す前に Moon が正しいタブを記憶します。その後も複数のウィンドウやタブから正確に選択できます。VS Code では連携拡張([`vscode-ext/claude-pet-jump`](vscode-ext/claude-pet-jump/)、任意)で対応する統合ターミナルをフォーカスできます。マーカーが見つからない、一意でない、または未取得の場合は首を振り、別の AI のターミナルへ推測で移動しません。
 - **Windows のみ**(`powershell.exe` + WinForms)。
 - **ネイティブ GUI パネルではカードが出ないことがあります**:ターミナル実行は常に動作。GUI パネルはフック未発火/`claude.exe` 非生成だと出ないことがあります(他のターミナルセッションには影響なし)。
 - **カード名とタブ名は自動同期しません**:カードのタイトルは既定で最初の入力になり、タブ名とは独立です。一致させたい場合は、**行の ✎ で手動リネーム**できます(名前は固定され上書きされません)。

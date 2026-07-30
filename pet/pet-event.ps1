@@ -60,6 +60,25 @@ function Set-TerminalMarker($key) {
 $terminalKey = Get-TerminalKey
 Set-TerminalMarker $terminalKey
 
+# Claude changes its application title as soon as control returns, so the marker is only
+# a short capture window. On the first event seen by each resident process, keep this hook
+# alive until the resident confirms it cached the exact UI Automation TabItem. Later events
+# see the matching ack and return immediately. The bounded wait never blocks when Moon is off.
+function Wait-TerminalCapture($key) {
+  if (-not $key) { return }
+  $petPid = 0
+  $pf = Join-Path $dir 'pet.pid'
+  try { [void][int]::TryParse(((RU $pf).Trim()), [ref]$petPid) } catch {}
+  if ($petPid -le 0 -or -not (Get-Process -Id $petPid -ErrorAction SilentlyContinue)) { return }
+  $ackPath = "$file.taback"
+  $deadline = [DateTime]::UtcNow.AddMilliseconds(1200)
+  do {
+    $ack = (RU $ackPath) -split "`t"
+    if ($ack.Count -ge 2 -and $ack[0] -eq "$petPid" -and $ack[1] -ceq $key) { return }
+    Start-Sleep -Milliseconds 40
+  } while ([DateTime]::UtcNow -lt $deadline)
+}
+
 # scrub every control char (incl. TAB/CR/LF/ESC/BEL) so a value can never corrupt the
 # single-line TAB-separated record; cap length so a pathological title can't bloat it
 function CleanRec($s) {
@@ -156,6 +175,7 @@ function WriteSession($key, $label, $title, $detail, $model, $detailAuthor) {
   $epoch = [long]([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())
   $rec = ($key, $label, $title, $detail, "$epoch", $model, $cp, $fp, $tpF, $cwdF, $detailAuthor, $terminalKeyF) -join "`t"
   [IO.File]::WriteAllText($file, $rec, (New-Object Text.UTF8Encoding($false)))
+  Wait-TerminalCapture $terminalKeyF
 }
 $projOr = $proj   # may be empty; the resident localizes an empty title to "new session"
 function TitleOr { $t = ExistingTitle; if ($t) { return $t } else { return $projOr } }

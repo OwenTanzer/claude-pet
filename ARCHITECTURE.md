@@ -62,9 +62,11 @@
   片段日后误匹配。README 已知限制三语口径=命令类 1-2s 恢复,非命令类等跑完。
 - **点卡跳窗(click-to-jump,1.2.0;WT 精确标签 1.6.0)**:会话记录第 7 字段 = claudePid,第 12 字段 =
   `WT_SESSION` 经 SHA-256 得到的 10 位短键(不持久化原值);field 8 仍为空占位,既有 transcript/cwd 索引不变。
-  每个钩子在所属控制台写入 `Moon - Claude Code [短键]` 标题。单击卡片或月亮时,常驻先沿 claudePid 父进程链
-  验证宿主;若命中 WindowsTerminal.exe,绝不直接激活它的共享 MainWindowHandle,而是用 UI Automation 扫描该进程
-  的所有顶层窗口与 TabItem,仅在标题标记**恰好匹配一个**时先选择标签、再激活所属窗口。缺失或重复匹配一律摇头,
+  每个钩子在所属控制台短暂写入 `Moon - Claude Code [短键]` 标题,写完会话记录后最多等待 1.2s。常驻在 120ms
+  文件轮询中沿 claudePid 父进程链验证宿主,用 UI Automation 扫描 WindowsTerminal.exe 的全部顶层窗口与 TabItem;
+  仅在标题标记**恰好匹配一个**时缓存该 AutomationElement 并写 `<session>.taback`(`residentPid + 短键`)。钩子收到
+  当前 resident 的 ack 即刻返回,随后 Claude 可继续覆盖其动态标题;点击时直接选择仍存活的缓存元素并激活所属窗口。
+  WindowsTerminal 的共享 MainWindowHandle 永远不会被直接采用。缓存失效、缺失或重复匹配一律摇头,
   **不跳不猜**,所以不会误入 Saturn、Codex 或另一个 Claude 会话。非 WT 宿主继续走原窗口激活路径;VS Code 内
   tab 级仍由伴生扩展补全(见下条)。旧版基于 PID/索引反推 WT tab 的失败调查仍保存在
   `docs/wt-tab-jump-{diagnosis-design,pid-investigation,solution-space}.md` 与

@@ -73,6 +73,19 @@ function Set-TerminalMarker($key) {
 }
 $terminalKey = Get-TerminalKey
 Set-TerminalMarker $terminalKey
+function Read-Utf8($path) { if (Test-Path $path) { try { return [IO.File]::ReadAllText($path, [Text.Encoding]::UTF8) } catch {} }; return '' }
+function Wait-TerminalCapture($key) {
+  if (-not $key) { return }
+  $petPid = 0
+  try { [void][int]::TryParse(((Read-Utf8 $pf).Trim()), [ref]$petPid) } catch {}
+  if ($petPid -le 0 -or -not (Get-Process -Id $petPid -ErrorAction SilentlyContinue)) { return }
+  $deadline = [DateTime]::UtcNow.AddMilliseconds(1600)
+  do {
+    $ack = (Read-Utf8 "$file.taback") -split "`t"
+    if ($ack.Count -ge 2 -and $ack[0] -eq "$petPid" -and $ack[1] -ceq $key) { return }
+    Start-Sleep -Milliseconds 40
+  } while ([DateTime]::UtcNow -lt $deadline)
+}
 
 # Register this window's card WITHOUT clobbering an ongoing session's real title/state.
 #   clear   -> conversation reset: fresh idle card + drop the rename lock
@@ -125,3 +138,4 @@ if ($state -eq 'on') {
     if ($p) { $p.Id | Set-Content $pf }
   }
 }
+Wait-TerminalCapture $terminalKey
