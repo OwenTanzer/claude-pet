@@ -43,6 +43,7 @@ test('hook contracts and normalized state records stay privacy-safe', (t) => {
   const records = files.map((name) => JSON.parse(fs.readFileSync(path.join(eventDir, name), 'utf8')));
   assert.deepEqual(records.map((record) => record.state), ['working', 'working', 'working', 'working', 'done']);
   assert.equal(new Set(records.map((record) => record.conversationKey)).size, 1);
+  assert.equal(records.every((record) => Number.isInteger(record.hookParentPid) && record.hookParentPid > 0), true);
   const persisted = JSON.stringify(records);
   for (const secret of ['the-real-conversation-id', 'secret-project', 'transcript.jsonl', 'DO NOT STORE THIS PROMPT', 'SECRET COMMAND']) {
     assert.equal(persisted.includes(secret), false, `persisted secret: ${secret}`);

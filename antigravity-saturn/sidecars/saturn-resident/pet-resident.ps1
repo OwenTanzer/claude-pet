@@ -1,5 +1,6 @@
 param(
   [switch]$SmokeTest,
+  [switch]$CompileTest,
   [string]$DataRoot
 )
 
@@ -92,6 +93,19 @@ public class SaturnWindow : Form {
     }
 }
 
+public class SaturnCardWindow : Form {
+    protected override bool ShowWithoutActivation { get { return true; } }
+    protected override CreateParams CreateParams {
+        get {
+            CreateParams cp = base.CreateParams;
+            cp.ExStyle |= 0x00000008; // WS_EX_TOPMOST
+            cp.ExStyle |= 0x00000080; // WS_EX_TOOLWINDOW
+            cp.ExStyle |= 0x08000000; // WS_EX_NOACTIVATE
+            return cp;
+        }
+    }
+}
+
 public static class SaturnNative {
     [DllImport("user32.dll")] static extern bool SetProcessDpiAwarenessContext(IntPtr value);
     [DllImport("user32.dll")] static extern bool SetProcessDPIAware();
@@ -112,6 +126,8 @@ public static class SaturnNative {
     [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
     [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
     [DllImport("user32.dll")] static extern bool AttachThreadInput(uint a, uint b, bool attach);
+    [DllImport("user32.dll")] static extern bool IsWindow(IntPtr h);
+    public static bool IsValidWindow(IntPtr h) { try { return h != IntPtr.Zero && IsWindow(h); } catch { return false; } }
 
     public static bool Activate(IntPtr h) {
         try {
@@ -225,6 +241,11 @@ public static class SaturnNative {
 Add-Type -TypeDefinition $native -ReferencedAssemblies System.Windows.Forms, System.Drawing
 [SaturnNative]::EnableDpi()
 
+if ($CompileTest) {
+  Write-Output '{"ok":true,"compiled":true}'
+  exit 0
+}
+
 if (-not (Test-Path -LiteralPath $DataRoot)) { New-Item -ItemType Directory -Force -Path $DataRoot | Out-Null }
 if (-not (Test-Path -LiteralPath $eventsDir)) { New-Item -ItemType Directory -Force -Path $eventsDir | Out-Null }
 
@@ -234,19 +255,22 @@ try { $acquired = $script:residentMutex.WaitOne(0) }
 catch [System.Threading.AbandonedMutexException] { $acquired = $true }
 if (-not $acquired) { exit 0 }
 
-function Get-LatestState {
+function Get-LatestStatus {
   $file = Get-ChildItem -LiteralPath $eventsDir -Filter '*.json' -File -ErrorAction SilentlyContinue |
     Sort-Object Name -Descending | Select-Object -First 1
-  if (-not $file) { return 'idle' }
-  try { $event = (Read-Utf8 $file.FullName) | ConvertFrom-Json } catch { return 'idle' }
+  if (-not $file) { return @{ state = 'idle'; hostPid = 0 } }
+  try { $event = (Read-Utf8 $file.FullName) | ConvertFrom-Json } catch { return @{ state = 'idle'; hostPid = 0 } }
   $age = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() - [long]$event.timestampMs
   if ($age -lt 0) { $age = 0 }
+  $hostPid = 0
+  if ($event.PSObject.Properties['hookParentPid']) { [void][int]::TryParse(($event.hookParentPid + ''), [ref]$hostPid) }
+  $state = 'idle'
   switch ([string]$event.state) {
-    'done' { if ($age -le 10000) { return 'done' } }
-    'attention' { if ($age -le 1800000) { return 'attention' } }
-    'working' { if ($age -le 1800000) { return 'working' } }
+    'done' { if ($age -le 10000) { $state = 'done' } }
+    'attention' { if ($age -le 1800000) { $state = 'attention' } }
+    'working' { if ($age -le 1800000) { $state = 'working' } }
   }
-  return 'idle'
+  return @{ state = $state; hostPid = $hostPid }
 }
 
 $desktopGraphics = [System.Drawing.Graphics]::FromHwnd([IntPtr]::Zero)
@@ -282,6 +306,60 @@ $form.StartPosition = 'Manual'
 $form.Bounds = New-Object System.Drawing.Rectangle($script:x, $script:y, $size, $size)
 $form.Text = ''
 
+$cardWidth = [int](268 * $scale)
+$cardHeight = [int](72 * $scale)
+$cardGap = [int](10 * $scale)
+$card = New-Object SaturnCardWindow
+$card.FormBorderStyle = 'None'; $card.ShowInTaskbar = $false; $card.StartPosition = 'Manual'; $card.TopMost = $true
+$card.Size = New-Object System.Drawing.Size($cardWidth, $cardHeight)
+$card.BackColor = [System.Drawing.Color]::FromArgb(250, 249, 245)
+$roundPath = New-Object System.Drawing.Drawing2D.GraphicsPath
+$radius = [int](18 * $scale)
+$roundPath.AddArc(0, 0, $radius, $radius, 180, 90)
+$roundPath.AddArc($cardWidth-$radius-1, 0, $radius, $radius, 270, 90)
+$roundPath.AddArc($cardWidth-$radius-1, $cardHeight-$radius-1, $radius, $radius, 0, 90)
+$roundPath.AddArc(0, $cardHeight-$radius-1, $radius, $radius, 90, 90)
+$roundPath.CloseFigure(); $card.Region = New-Object System.Drawing.Region($roundPath); $roundPath.Dispose()
+
+$cardTitle = New-Object System.Windows.Forms.Label
+$cardTitle.AutoSize = $false; $cardTitle.Location = New-Object System.Drawing.Point([int](20*$scale), [int](11*$scale))
+$cardTitle.Size = New-Object System.Drawing.Size([int](228*$scale), [int](25*$scale))
+$cardTitle.Font = New-Object System.Drawing.Font('Segoe UI', 11, [System.Drawing.FontStyle]::Bold)
+$cardTitle.ForeColor = [System.Drawing.Color]::FromArgb(44, 43, 48); $cardTitle.BackColor = [System.Drawing.Color]::Transparent
+$cardTitle.Text = 'Antigravity CLI'
+
+$cardDot = New-Object System.Windows.Forms.Label
+$cardDot.AutoSize = $false; $cardDot.Location = New-Object System.Drawing.Point([int](20*$scale), [int](41*$scale))
+$cardDot.Size = New-Object System.Drawing.Size([int](14*$scale), [int](20*$scale))
+$cardDot.Font = New-Object System.Drawing.Font('Segoe UI Symbol', 9, [System.Drawing.FontStyle]::Bold)
+$cardDot.Text = [string][char]0x25CF; $cardDot.BackColor = [System.Drawing.Color]::Transparent
+
+$cardState = New-Object System.Windows.Forms.Label
+$cardState.AutoSize = $false; $cardState.Location = New-Object System.Drawing.Point([int](38*$scale), [int](41*$scale))
+$cardState.Size = New-Object System.Drawing.Size([int](205*$scale), [int](21*$scale))
+$cardState.Font = New-Object System.Drawing.Font('Segoe UI', 9.5)
+$cardState.BackColor = [System.Drawing.Color]::Transparent
+[void]$card.Controls.Add($cardTitle); [void]$card.Controls.Add($cardDot); [void]$card.Controls.Add($cardState)
+
+function Place-Card {
+  $cx = $script:x - $cardWidth - $cardGap
+  if ($cx -lt $workArea.Left) { $cx = $script:x + $size + $cardGap }
+  $cy = $script:y + [int](($size - $cardHeight) / 2)
+  $card.Location = New-Object System.Drawing.Point($cx, $cy)
+}
+
+function Update-Card {
+  switch ($script:state) {
+    'working' { $label = 'Working'; $color = [System.Drawing.Color]::FromArgb(76, 119, 190) }
+    'attention' { $label = 'Needs attention'; $color = [System.Drawing.Color]::FromArgb(214, 139, 45) }
+    'done' { $label = 'Done'; $color = [System.Drawing.Color]::FromArgb(59, 166, 91) }
+    default { if ($card.Visible) { $card.Hide() }; return }
+  }
+  $cardDot.ForeColor = $color; $cardState.ForeColor = $color; $cardState.Text = $label
+  Place-Card
+  if (-not $card.Visible) { $card.Show($form) }
+}
+
 $menu = New-Object System.Windows.Forms.ContextMenuStrip
 $closeItem = $menu.Items.Add('Close Saturn')
 $closeItem.add_Click({ [System.Windows.Forms.Application]::Exit() })
@@ -291,7 +369,9 @@ $resetItem.add_Click({
   Write-Utf8 $posPath "$($script:x),$($script:y)"
 })
 
-$script:state = Get-LatestState
+$initialStatus = Get-LatestStatus
+$script:state = $initialStatus.state
+$script:targetPid = [int]$initialStatus.hostPid
 $script:pointerDown = $false
 $script:dragging = $false
 $script:dragStartX = 0; $script:dragStartY = 0
@@ -322,12 +402,41 @@ function Render-Saturn {
   [SaturnNative]::SetBitmap($form.Handle, $script:frames[$key], $script:x + $shake, $script:y + $bob)
 }
 
+function Find-HostWindow([int]$StartPid) {
+  if ($StartPid -le 0) { return [IntPtr]::Zero }
+  $all = @{}
+  foreach ($processInfo in @(Get-CimInstance -Query 'SELECT ProcessId,ParentProcessId,CreationDate FROM Win32_Process' -ErrorAction SilentlyContinue)) {
+    $all[[int]$processInfo.ProcessId] = $processInfo
+  }
+  $current = $StartPid; $childBorn = $null
+  for ($depth = 0; $depth -lt 10; $depth++) {
+    if ($current -le 0 -or -not $all.ContainsKey($current)) { break }
+    $info = $all[$current]
+    $born = $null; try { $born = [DateTime]$info.CreationDate } catch {}
+    if ($childBorn -and $born -and $born -gt $childBorn.AddSeconds(2)) { break }
+    $process = Get-Process -Id $current -ErrorAction SilentlyContinue
+    if ($process -and $process.MainWindowHandle.ToInt64() -ne 0) { return $process.MainWindowHandle }
+    if ($born) { $childBorn = $born }
+    $current = 0; if ($info.ParentProcessId) { $current = [int]$info.ParentProcessId }
+  }
+  return [IntPtr]::Zero
+}
+
 function Focus-Antigravity {
-  $window = [SaturnNative]::FindAntigravityWindow()
+  $targetPid = $script:targetPid
+  $window = Find-HostWindow $targetPid
+  if ($window -eq [IntPtr]::Zero) {
+    $agy = Get-Process -Name 'agy' -ErrorAction SilentlyContinue | Sort-Object StartTime -Descending | Select-Object -First 1
+    if ($agy) { $targetPid = $agy.Id; $window = Find-HostWindow $targetPid }
+  }
+  if ($window -eq [IntPtr]::Zero) { $window = [SaturnNative]::FindAntigravityWindow() }
   $ok = [SaturnNative]::Activate($window)
   if (-not $ok) { $script:shakeTicks = 8 }
-  Write-Log ('focus hwnd={0} ok={1}' -f $window.ToInt64(), [int]$ok)
+  Write-Log ('focus targetPid={0} hwnd={1} ok={2}' -f $targetPid, $window.ToInt64(), [int]$ok)
 }
+
+$focusHandler = { Focus-Antigravity }
+$card.add_Click($focusHandler); $cardTitle.add_Click($focusHandler); $cardDot.add_Click($focusHandler); $cardState.add_Click($focusHandler)
 
 $form.add_MouseDown({ param($sender, $event)
   if ($event.Button -eq [System.Windows.Forms.MouseButtons]::Left) {
@@ -346,7 +455,7 @@ $form.add_MouseMove({ param($sender, $event)
     }
     if ($script:dragging) {
       $script:x = $cursor.X - $script:dragOffsetX; $script:y = $cursor.Y - $script:dragOffsetY
-      Render-Saturn
+      Place-Card; Render-Saturn
     }
   }
 })
@@ -383,25 +492,29 @@ $timer.add_Tick({
   $script:frameTick++
   if ($script:stateDirty -or ($now - $script:lastStatePoll).TotalMilliseconds -ge 250) {
     $script:stateDirty = $false; $script:lastStatePoll = $now
-    $newState = Get-LatestState
+    $status = Get-LatestStatus
+    $newState = $status.state
+    if ([int]$status.hostPid -gt 0) { $script:targetPid = [int]$status.hostPid }
     if ($newState -ne $script:state) {
       Write-Log ("state=$newState")
       $script:state = $newState
+      Update-Card
     }
   }
   if (($now - $script:lastTopmost).TotalMilliseconds -ge 2000) {
     $script:lastTopmost = $now
     [SaturnNative]::KeepTopmost($form.Handle)
+    if ($card.Visible) { [SaturnNative]::KeepTopmost($card.Handle) }
   }
   Render-Saturn
 })
 
-$form.add_Shown({ Render-Saturn; $timer.Start() })
+$form.add_Shown({ Render-Saturn; Update-Card; $timer.Start() })
 $PID | Set-Content -LiteralPath $pidPath -Encoding ASCII
 Write-Log ('resident-start pid={0}' -f $PID)
 [System.Windows.Forms.Application]::Run($form)
 
-$timer.Stop(); $timer.Dispose(); $watcher.Dispose(); $menu.Dispose()
+$timer.Stop(); $timer.Dispose(); $watcher.Dispose(); $menu.Dispose(); $card.Dispose()
 foreach ($frame in $script:frames.Values) { try { $frame.Dispose() } catch {} }
 Remove-Item -LiteralPath $pidPath -Force -ErrorAction SilentlyContinue
 try { $script:residentMutex.ReleaseMutex() } catch {}

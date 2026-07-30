@@ -65,6 +65,7 @@ function normalizeEvent(eventName, payload, now = Date.now()) {
     state: mapped.state,
     reason: mapped.reason,
     conversationKey: conversationKey(payload.conversationId),
+    hookParentPid: process.ppid,
     timestampMs: now,
   };
 
