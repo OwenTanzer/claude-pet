@@ -716,7 +716,7 @@ $form.add_MouseMove({ param($sender, $event)
     }
     if ($script:dragging) {
       $script:x = $cursor.X - $script:dragOffsetX; $script:y = $cursor.Y - $script:dragOffsetY
-      Place-Card; Render-Saturn
+      Place-Cards; Render-Saturn
     }
   }
 })
@@ -729,8 +729,8 @@ $form.add_MouseUp({ param($sender, $event)
       Write-Utf8 $posPath "$($script:x),$($script:y)"
       Write-Log 'gesture=drag'
     } else {
-      Write-Log 'gesture=click'
-      Focus-Antigravity
+      Write-Log ('gesture=click sid={0}' -f $(if ($script:latestSid) { $script:latestSid.Substring(0, 6) } else { 'none' }))
+      Focus-Session $script:latestSid
     }
   } elseif ($event.Button -eq [System.Windows.Forms.MouseButtons]::Right) {
     $menu.Show($form, $form.PointToClient([System.Windows.Forms.Cursor]::Position))
@@ -751,7 +751,7 @@ $timer.Interval = 60
 $timer.add_Tick({
   $now = Get-Date
   $script:frameTick++
-  if ($script:stateDirty -or ($now - $script:lastStatePoll).TotalMilliseconds -ge 250) {
+  if ($script:stateDirty -or ($now - $script:lastStatePoll).TotalMilliseconds -ge 1000) {
     $script:stateDirty = $false; $script:lastStatePoll = $now
     $status = Get-LatestStatus
     $newState = $status.state
