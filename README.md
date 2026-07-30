@@ -4,6 +4,8 @@
 A little desktop mascot that watches your Claude Code progress for you.
 
 > This is Owen Tanzer's lunar-phase fork of [Peng Shen's original claude-pet](https://github.com/SHIN620265/claude-pet), preserving the original MIT attribution while adding the Moon character, real lunar phases, live sprite reloading, and click-to-terminal navigation.
+
+> **Cast of Characters:** the repository now also contains the independent [Antigravity Saturn companion](antigravity-saturn/README.md), a native Antigravity 2.0 plugin and lifecycle-managed sidecar designed to coexist with Claude Moon.
 Claude Code の進捗を見守る、デスクトップの小さなマスコット。
 
 <p align="center"><img src="docs/demo.gif" width="420" alt="Claude Desktop Pet — a status card cycling through needs-your-input → thinking → done, with the mascot reacting"></p>

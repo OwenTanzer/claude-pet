@@ -1,0 +1,49 @@
+{
+  "saturn-state": {
+    "PreInvocation": [
+      {
+        "type": "command",
+        "command": "node scripts/saturn-hook.js PreInvocation",
+        "timeout": 5
+      }
+    ],
+    "PostInvocation": [
+      {
+        "type": "command",
+        "command": "node scripts/saturn-hook.js PostInvocation",
+        "timeout": 5
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node scripts/saturn-hook.js PreToolUse",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node scripts/saturn-hook.js PostToolUse",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "type": "command",
+        "command": "node scripts/saturn-hook.js Stop",
+        "timeout": 5
+      }
+    ]
+  }
+}

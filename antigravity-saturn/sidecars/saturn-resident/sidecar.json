@@ -1,0 +1,16 @@
+{
+  "display_name": "Saturn desktop companion",
+  "description": "Shows Antigravity activity as a lightweight desktop Saturn.",
+  "command": "powershell.exe",
+  "args": [
+    "-NoLogo",
+    "-NoProfile",
+    "-NonInteractive",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-STA",
+    "-File",
+    "pet-resident.ps1"
+  ],
+  "restart_policy": "on-failure"
+}

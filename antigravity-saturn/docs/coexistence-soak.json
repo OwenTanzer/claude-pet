@@ -1,0 +1,34 @@
+{
+    "measuredAt":  "2026-07-30T21:16:14.5668532+00:00",
+    "elapsedSeconds":  15.6,
+    "logicalProcessors":  8,
+    "processes":  [
+                      {
+                          "label":  "claude-moon",
+                          "pid":  5288,
+                          "aliveAtEnd":  true,
+                          "cpuSeconds":  1,
+                          "oneCorePercent":  6.41,
+                          "hostPercent":  0.801,
+                          "averageWorkingSetMiB":  117.84,
+                          "peakWorkingSetMiB":  117.86
+                      },
+                      {
+                          "label":  "antigravity-saturn",
+                          "pid":  15888,
+                          "aliveAtEnd":  true,
+                          "cpuSeconds":  0,
+                          "oneCorePercent":  0,
+                          "hostPercent":  0,
+                          "averageWorkingSetMiB":  119.16,
+                          "peakWorkingSetMiB":  119.18
+                      }
+                  ],
+    "observations":  {
+                         "processIsolation":  "Moon and Saturn retained distinct live PIDs for the complete sample.",
+                         "dataIsolation":  "Verified statically: .claude/pet-data and .gemini/antigravity-saturn are disjoint.",
+                         "zOrder":  "Both residents remained alive; visual topmost ordering still requires a user-visible desktop check.",
+                         "notifications":  "Saturn emits no sound or toast, so it cannot collide with Moon notification audio.",
+                         "codexSun":  "Codex Sun is hosted by the Codex app and is not separately attributable by this process sampler."
+                     }
+}

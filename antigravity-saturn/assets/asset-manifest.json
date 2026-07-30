@@ -1,0 +1,54 @@
+{
+  "source": "antigravity-saturn\\assets\\source\\saturn-strip-transparent-v3.png",
+  "frameSize": [
+    360,
+    360
+  ],
+  "frames": {
+    "saturn-idle.png": {
+      "path": "antigravity-saturn\\assets\\saturn-idle.png",
+      "contentBounds": [
+        26,
+        75,
+        334,
+        285
+      ],
+      "cornerAlpha": [
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    "saturn-working.png": {
+      "path": "antigravity-saturn\\assets\\saturn-working.png",
+      "contentBounds": [
+        14,
+        75,
+        346,
+        284
+      ],
+      "cornerAlpha": [
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    "saturn-done.png": {
+      "path": "antigravity-saturn\\assets\\saturn-done.png",
+      "contentBounds": [
+        21,
+        74,
+        338,
+        285
+      ],
+      "cornerAlpha": [
+        0,
+        0,
+        0,
+        0
+      ]
+    }
+  }
+}
