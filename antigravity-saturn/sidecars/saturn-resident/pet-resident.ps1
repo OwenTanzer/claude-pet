@@ -1,6 +1,7 @@
 param(
   [switch]$SmokeTest,
   [switch]$CompileTest,
+  [switch]$CardModelTest,
   [string]$DataRoot
 )
 
@@ -17,6 +18,8 @@ $pidPath = Join-Path $DataRoot 'resident.pid'
 $posPath = Join-Path $DataRoot 'position.txt'
 $logPath = Join-Path $DataRoot 'resident.log'
 $collapsePath = Join-Path $DataRoot 'card-collapsed.flag'
+$dismissDir = Join-Path $DataRoot 'dismissed'
+$namesDir = Join-Path $DataRoot 'names'
 
 function Read-Utf8([string]$Path) {
   if (Test-Path -LiteralPath $Path) {
@@ -71,6 +74,7 @@ if ($SmokeTest) {
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName Microsoft.VisualBasic
 
 $native = @"
 using System;
@@ -256,34 +260,79 @@ if ($CompileTest) {
 
 if (-not (Test-Path -LiteralPath $DataRoot)) { New-Item -ItemType Directory -Force -Path $DataRoot | Out-Null }
 if (-not (Test-Path -LiteralPath $eventsDir)) { New-Item -ItemType Directory -Force -Path $eventsDir | Out-Null }
+if (-not (Test-Path -LiteralPath $dismissDir)) { New-Item -ItemType Directory -Force -Path $dismissDir | Out-Null }
+if (-not (Test-Path -LiteralPath $namesDir)) { New-Item -ItemType Directory -Force -Path $namesDir | Out-Null }
 
-$script:residentMutex = New-Object System.Threading.Mutex($false, 'Local\AntigravitySaturnPetResidentV1')
-$acquired = $false
-try { $acquired = $script:residentMutex.WaitOne(0) }
-catch [System.Threading.AbandonedMutexException] { $acquired = $true }
-if (-not $acquired) { exit 0 }
+if (-not $CardModelTest) {
+  $script:residentMutex = New-Object System.Threading.Mutex($false, 'Local\AntigravitySaturnPetResidentV1')
+  $acquired = $false
+  try { $acquired = $script:residentMutex.WaitOne(0) }
+  catch [System.Threading.AbandonedMutexException] { $acquired = $true }
+  if (-not $acquired) { exit 0 }
+}
 
-function Get-LatestStatus {
-  $file = Get-ChildItem -LiteralPath $eventsDir -Filter '*.json' -File -ErrorAction SilentlyContinue |
-    Sort-Object Name -Descending | Select-Object -First 1
-  if (-not $file) { return @{ state = 'idle'; hostPid = 0; terminalPid = 0; terminalKey = ''; eventId = '' } }
-  try { $event = (Read-Utf8 $file.FullName) | ConvertFrom-Json } catch { return @{ state = 'idle'; hostPid = 0; terminalPid = 0; terminalKey = ''; eventId = '' } }
-  $age = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() - [long]$event.timestampMs
-  if ($age -lt 0) { $age = 0 }
-  $hostPid = 0
-  if ($event.PSObject.Properties['hostPid']) { [void][int]::TryParse(($event.hostPid + ''), [ref]$hostPid) }
-  elseif ($event.PSObject.Properties['hookParentPid']) { [void][int]::TryParse(($event.hookParentPid + ''), [ref]$hostPid) }
-  $terminalPid = 0
-  if ($event.PSObject.Properties['terminalPid']) { [void][int]::TryParse(($event.terminalPid + ''), [ref]$terminalPid) }
-  $terminalKey = ''
-  if ($event.PSObject.Properties['terminalKey'] -and (($event.terminalKey + '') -match '^[0-9a-f]{10}$')) { $terminalKey = [string]$event.terminalKey }
-  $state = 'idle'
-  switch ([string]$event.state) {
-    'done' { if ($age -le 10000) { $state = 'done' } }
-    'attention' { if ($age -le 1800000) { $state = 'attention' } }
-    'working' { if ($age -le 1800000) { $state = 'working' } }
+function Get-DismissPath([string]$SessionId) { return (Join-Path $dismissDir ($SessionId + '.dismiss')) }
+function Get-NamePath([string]$SessionId) { return (Join-Path $namesDir ($SessionId + '.name')) }
+
+function Get-SessionStatuses {
+  $latest = @{}
+  $nowMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+  foreach ($file in @(Get-ChildItem -LiteralPath $eventsDir -Filter '*.json' -File -ErrorAction SilentlyContinue | Sort-Object Name -Descending)) {
+    $event = $null
+    try { $event = (Read-Utf8 $file.FullName) | ConvertFrom-Json } catch { continue }
+    if (-not $event) { continue }
+    $sid = [string]$event.conversationKey
+    if ($sid -notmatch '^[0-9a-f]{20}$' -or $latest.ContainsKey($sid)) { continue }
+    $timestampMs = 0L
+    if (-not [long]::TryParse(($event.timestampMs + ''), [ref]$timestampMs)) { continue }
+    $age = $nowMs - $timestampMs; if ($age -lt 0) { $age = 0 }
+    $hostPid = 0
+    if ($event.PSObject.Properties['hostPid']) { [void][int]::TryParse(($event.hostPid + ''), [ref]$hostPid) }
+    elseif ($event.PSObject.Properties['hookParentPid']) { [void][int]::TryParse(($event.hookParentPid + ''), [ref]$hostPid) }
+    $terminalPid = 0
+    if ($event.PSObject.Properties['terminalPid']) { [void][int]::TryParse(($event.terminalPid + ''), [ref]$terminalPid) }
+    $terminalKey = ''
+    if ($event.PSObject.Properties['terminalKey'] -and (($event.terminalKey + '') -match '^[0-9a-f]{10}$')) { $terminalKey = [string]$event.terminalKey }
+    $state = 'idle'
+    switch ([string]$event.state) {
+      'done' { if ($age -le 10000) { $state = 'done' } }
+      'attention' { if ($age -le 1800000) { $state = 'attention' } }
+      'working' { if ($age -le 1800000) { $state = 'working' } }
+    }
+    $latest[$sid] = [pscustomobject]@{
+      sessionId = $sid; state = $state; timestampMs = $timestampMs
+      hostPid = $hostPid; terminalPid = $terminalPid; terminalKey = $terminalKey
+      eventId = $file.Name
+    }
   }
-  return @{ state = $state; hostPid = $hostPid; terminalPid = $terminalPid; terminalKey = $terminalKey; eventId = $file.Name }
+  return @($latest.Values | Sort-Object timestampMs -Descending)
+}
+
+function Get-SessionName([string]$SessionId) {
+  $custom = (Read-Utf8 (Get-NamePath $SessionId)).Trim()
+  if ($custom) { return $custom }
+  if ($SessionId -match '^[0-9a-f]{20}$') { return ('Antigravity CLI [{0}]' -f $SessionId.Substring(0, 4)) }
+  return 'Antigravity CLI'
+}
+
+function Test-SessionDismissed($Status) {
+  if (-not $Status) { return $false }
+  $dismissedEvent = (Read-Utf8 (Get-DismissPath $Status.sessionId)).Trim()
+  return [bool]($dismissedEvent -and $dismissedEvent -eq $Status.eventId)
+}
+
+if ($CardModelTest) {
+  $model = @()
+  foreach ($status in @(Get-SessionStatuses)) {
+    $model += [pscustomobject]@{
+      sessionId = $status.sessionId; state = $status.state; timestampMs = $status.timestampMs
+      hostPid = $status.hostPid; terminalPid = $status.terminalPid; terminalKey = $status.terminalKey
+      eventId = $status.eventId; title = Get-SessionName $status.sessionId
+      dismissed = Test-SessionDismissed $status
+    }
+  }
+  @($model) | ConvertTo-Json -Depth 4
+  exit 0
 }
 
 $desktopGraphics = [System.Drawing.Graphics]::FromHwnd([IntPtr]::Zero)
@@ -319,73 +368,135 @@ $form.StartPosition = 'Manual'
 $form.Bounds = New-Object System.Drawing.Rectangle($script:x, $script:y, $size, $size)
 $form.Text = ''
 
-$cardWidth = [int](268 * $scale)
-$cardHeight = [int](72 * $scale)
-$cardGap = [int](10 * $scale)
-$card = New-Object SaturnCardWindow
-$card.FormBorderStyle = 'None'; $card.ShowInTaskbar = $false; $card.StartPosition = 'Manual'; $card.TopMost = $true
-$card.Size = New-Object System.Drawing.Size($cardWidth, $cardHeight)
-$card.BackColor = [System.Drawing.Color]::FromArgb(250, 249, 245)
-$roundPath = New-Object System.Drawing.Drawing2D.GraphicsPath
-$radius = [int](18 * $scale)
-$roundPath.AddArc(0, 0, $radius, $radius, 180, 90)
-$roundPath.AddArc($cardWidth-$radius-1, 0, $radius, $radius, 270, 90)
-$roundPath.AddArc($cardWidth-$radius-1, $cardHeight-$radius-1, $radius, $radius, 0, 90)
-$roundPath.AddArc(0, $cardHeight-$radius-1, $radius, $radius, 90, 90)
-$roundPath.CloseFigure(); $card.Region = New-Object System.Drawing.Region($roundPath); $roundPath.Dispose()
+$MAXCARDS = 3
+$cardWidth = [int](292 * $scale)
+$cardHeight = [int](62 * $scale)
+$cardGap = [int](7 * $scale)
+$script:cards = @(); $script:cardTitles = @(); $script:cardDots = @()
+$script:cardStates = @(); $script:cardEdits = @(); $script:cardCloses = @(); $script:cardMore = @()
+$script:rowSids = New-Object 'string[]' $MAXCARDS
+$script:visibleCardCount = 0
 
-$cardTitle = New-Object System.Windows.Forms.Label
-$cardTitle.AutoSize = $false; $cardTitle.Location = New-Object System.Drawing.Point([int](20*$scale), [int](11*$scale))
-$cardTitle.Size = New-Object System.Drawing.Size([int](205*$scale), [int](25*$scale))
-$cardTitle.Font = New-Object System.Drawing.Font('Segoe UI', 11, [System.Drawing.FontStyle]::Bold)
-$cardTitle.ForeColor = [System.Drawing.Color]::FromArgb(44, 43, 48); $cardTitle.BackColor = [System.Drawing.Color]::Transparent
-$cardTitle.Text = 'Antigravity CLI'
+for ($i = 0; $i -lt $MAXCARDS; $i++) {
+  $card = New-Object SaturnCardWindow
+  $card.FormBorderStyle = 'None'; $card.ShowInTaskbar = $false; $card.StartPosition = 'Manual'; $card.TopMost = $true
+  $card.Size = New-Object System.Drawing.Size($cardWidth, $cardHeight)
+  $card.BackColor = [System.Drawing.Color]::FromArgb(250, 249, 245); $card.Tag = $i
+  $roundPath = New-Object System.Drawing.Drawing2D.GraphicsPath
+  $radius = [int](18 * $scale)
+  $roundPath.AddArc(0, 0, $radius, $radius, 180, 90)
+  $roundPath.AddArc($cardWidth-$radius-1, 0, $radius, $radius, 270, 90)
+  $roundPath.AddArc($cardWidth-$radius-1, $cardHeight-$radius-1, $radius, $radius, 0, 90)
+  $roundPath.AddArc(0, $cardHeight-$radius-1, $radius, $radius, 90, 90)
+  $roundPath.CloseFigure(); $card.Region = New-Object System.Drawing.Region($roundPath); $roundPath.Dispose()
 
-$cardDot = New-Object System.Windows.Forms.Label
-$cardDot.AutoSize = $false; $cardDot.Location = New-Object System.Drawing.Point([int](20*$scale), [int](41*$scale))
-$cardDot.Size = New-Object System.Drawing.Size([int](14*$scale), [int](20*$scale))
-$cardDot.Font = New-Object System.Drawing.Font('Segoe UI Symbol', 9, [System.Drawing.FontStyle]::Bold)
-$cardDot.Text = [string][char]0x25CF; $cardDot.BackColor = [System.Drawing.Color]::Transparent
+  $title = New-Object System.Windows.Forms.Label
+  $title.AutoSize = $false; $title.Location = New-Object System.Drawing.Point([int](18*$scale), [int](8*$scale))
+  $title.Size = New-Object System.Drawing.Size([int](210*$scale), [int](24*$scale))
+  $title.Font = New-Object System.Drawing.Font('Segoe UI', 10.5, [System.Drawing.FontStyle]::Bold)
+  $title.ForeColor = [System.Drawing.Color]::FromArgb(44, 43, 48); $title.BackColor = [System.Drawing.Color]::Transparent
+  $title.Cursor = [System.Windows.Forms.Cursors]::Hand; $title.Tag = $i
 
-$cardState = New-Object System.Windows.Forms.Label
-$cardState.AutoSize = $false; $cardState.Location = New-Object System.Drawing.Point([int](38*$scale), [int](41*$scale))
-$cardState.Size = New-Object System.Drawing.Size([int](205*$scale), [int](21*$scale))
-$cardState.Font = New-Object System.Drawing.Font('Segoe UI', 9.5)
-$cardState.BackColor = [System.Drawing.Color]::Transparent
-$cardClose = New-Object System.Windows.Forms.Label
-$cardClose.AutoSize = $false; $cardClose.Location = New-Object System.Drawing.Point([int](239*$scale), [int](8*$scale))
-$cardClose.Size = New-Object System.Drawing.Size([int](20*$scale), [int](20*$scale))
-$cardClose.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
-$cardClose.ForeColor = [System.Drawing.Color]::FromArgb(150, 150, 155); $cardClose.BackColor = [System.Drawing.Color]::Transparent
-$cardClose.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter; $cardClose.Text = 'x'; $cardClose.Cursor = [System.Windows.Forms.Cursors]::Hand
-[void]$card.Controls.Add($cardTitle); [void]$card.Controls.Add($cardDot); [void]$card.Controls.Add($cardState); [void]$card.Controls.Add($cardClose)
+  $dot = New-Object System.Windows.Forms.Label
+  $dot.AutoSize = $false; $dot.Location = New-Object System.Drawing.Point([int](18*$scale), [int](34*$scale))
+  $dot.Size = New-Object System.Drawing.Size([int](14*$scale), [int](20*$scale))
+  $dot.Font = New-Object System.Drawing.Font('Segoe UI Symbol', 9, [System.Drawing.FontStyle]::Bold)
+  $dot.Text = [string][char]0x25CF; $dot.BackColor = [System.Drawing.Color]::Transparent
+  $dot.Cursor = [System.Windows.Forms.Cursors]::Hand; $dot.Tag = $i
 
-function Place-Card {
+  $stateLabel = New-Object System.Windows.Forms.Label
+  $stateLabel.AutoSize = $false; $stateLabel.Location = New-Object System.Drawing.Point([int](36*$scale), [int](34*$scale))
+  $stateLabel.Size = New-Object System.Drawing.Size([int](178*$scale), [int](21*$scale))
+  $stateLabel.Font = New-Object System.Drawing.Font('Segoe UI', 9.5)
+  $stateLabel.BackColor = [System.Drawing.Color]::Transparent; $stateLabel.Cursor = [System.Windows.Forms.Cursors]::Hand; $stateLabel.Tag = $i
+
+  $edit = New-Object System.Windows.Forms.Label
+  $edit.AutoSize = $false; $edit.Location = New-Object System.Drawing.Point([int](238*$scale), [int](7*$scale))
+  $edit.Size = New-Object System.Drawing.Size([int](20*$scale), [int](20*$scale))
+  $edit.Font = New-Object System.Drawing.Font('Segoe UI Symbol', 9)
+  $edit.ForeColor = [System.Drawing.Color]::FromArgb(120, 120, 126); $edit.BackColor = [System.Drawing.Color]::Transparent
+  $edit.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter; $edit.Text = [string][char]0x270E; $edit.Cursor = [System.Windows.Forms.Cursors]::Hand; $edit.Tag = $i
+
+  $close = New-Object System.Windows.Forms.Label
+  $close.AutoSize = $false; $close.Location = New-Object System.Drawing.Point([int](263*$scale), [int](7*$scale))
+  $close.Size = New-Object System.Drawing.Size([int](20*$scale), [int](20*$scale))
+  $close.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
+  $close.ForeColor = [System.Drawing.Color]::FromArgb(150, 150, 155); $close.BackColor = [System.Drawing.Color]::Transparent
+  $close.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter; $close.Text = 'x'; $close.Cursor = [System.Windows.Forms.Cursors]::Hand; $close.Tag = $i
+
+  $more = New-Object System.Windows.Forms.Label
+  $more.AutoSize = $false; $more.Location = New-Object System.Drawing.Point([int](226*$scale), [int](35*$scale))
+  $more.Size = New-Object System.Drawing.Size([int](52*$scale), [int](19*$scale))
+  $more.Font = New-Object System.Drawing.Font('Segoe UI', 8.5, [System.Drawing.FontStyle]::Bold)
+  $more.ForeColor = [System.Drawing.Color]::FromArgb(145, 145, 150); $more.BackColor = [System.Drawing.Color]::Transparent
+  $more.TextAlign = [System.Drawing.ContentAlignment]::MiddleRight
+
+  [void]$card.Controls.Add($title); [void]$card.Controls.Add($dot); [void]$card.Controls.Add($stateLabel)
+  [void]$card.Controls.Add($edit); [void]$card.Controls.Add($close); [void]$card.Controls.Add($more)
+  $script:cards += $card; $script:cardTitles += $title; $script:cardDots += $dot
+  $script:cardStates += $stateLabel; $script:cardEdits += $edit; $script:cardCloses += $close; $script:cardMore += $more
+}
+
+function Get-StateRank([string]$State) {
+  switch ($State) { 'attention' { return 0 }; 'working' { return 1 }; 'done' { return 2 }; default { return 9 } }
+}
+
+function Refresh-SessionModel {
+  $script:sessions = @(Get-SessionStatuses)
+  $script:sessionsById = @{}
+  foreach ($status in $script:sessions) { $script:sessionsById[$status.sessionId] = $status }
+  $script:latestSid = $(if ($script:sessions.Count -gt 0) { [string]$script:sessions[0].sessionId } else { '' })
+  if (@($script:sessions | Where-Object { $_.state -eq 'attention' }).Count -gt 0) { $script:state = 'attention' }
+  elseif (@($script:sessions | Where-Object { $_.state -eq 'working' }).Count -gt 0) { $script:state = 'working' }
+  elseif (@($script:sessions | Where-Object { $_.state -eq 'done' }).Count -gt 0) { $script:state = 'done' }
+  else { $script:state = 'idle' }
+}
+
+function Place-Cards {
+  $count = $script:visibleCardCount
+  if ($count -le 0) { return }
   $cx = $script:x - $cardWidth - $cardGap
   if ($cx -lt $workArea.Left) { $cx = $script:x + $size + $cardGap }
-  $cy = $script:y + [int](($size - $cardHeight) / 2)
-  $card.Location = New-Object System.Drawing.Point($cx, $cy)
-}
-
-function Update-Card {
-  if ($script:cardCollapsed) { if ($card.Visible) { $card.Hide() }; return }
-  switch ($script:state) {
-    'working' { $label = 'Working'; $color = [System.Drawing.Color]::FromArgb(76, 119, 190) }
-    'attention' { $label = 'Needs attention'; $color = [System.Drawing.Color]::FromArgb(214, 139, 45) }
-    'done' { $label = 'Done'; $color = [System.Drawing.Color]::FromArgb(59, 166, 91) }
-    default { if ($card.Visible) { $card.Hide() }; return }
+  $total = ($count * $cardHeight) + (($count - 1) * $cardGap)
+  $startY = $script:y + [int](($size - $total) / 2)
+  for ($i = 0; $i -lt $count; $i++) {
+    $script:cards[$i].Location = New-Object System.Drawing.Point($cx, ($startY + ($i * ($cardHeight + $cardGap))))
   }
-  $cardDot.ForeColor = $color; $cardState.ForeColor = $color; $cardState.Text = $label
-  Place-Card
-  if (-not $card.Visible) { $card.Show($form) }
 }
 
-function Toggle-Card {
+function Update-Cards {
+  $active = @($script:sessions | Where-Object { $_.state -ne 'idle' -and -not (Test-SessionDismissed $_) } |
+    Sort-Object @{Expression={ Get-StateRank $_.state }}, @{Expression={$_.timestampMs};Descending=$true})
+  $shown = @($active | Select-Object -First $MAXCARDS)
+  $script:visibleCardCount = $shown.Count
+  for ($i = 0; $i -lt $MAXCARDS; $i++) {
+    $card = $script:cards[$i]
+    if ($script:cardCollapsed -or $i -ge $shown.Count) {
+      $script:rowSids[$i] = ''
+      if ($card.Visible) { $card.Hide() }
+      continue
+    }
+    $status = $shown[$i]; $script:rowSids[$i] = [string]$status.sessionId
+    switch ($status.state) {
+      'working' { $label = 'Working'; $color = [System.Drawing.Color]::FromArgb(76, 119, 190) }
+      'attention' { $label = 'Needs attention'; $color = [System.Drawing.Color]::FromArgb(214, 139, 45) }
+      default { $label = 'Done'; $color = [System.Drawing.Color]::FromArgb(59, 166, 91) }
+    }
+    $script:cardTitles[$i].Text = Get-SessionName $status.sessionId
+    $script:cardDots[$i].ForeColor = $color; $script:cardStates[$i].ForeColor = $color; $script:cardStates[$i].Text = $label
+    $script:cardMore[$i].Text = $(if ($i -eq ($MAXCARDS - 1) -and $active.Count -gt $MAXCARDS) { '+' + ($active.Count - $MAXCARDS) } else { '' })
+    $card.BackColor = $(if ($script:selectedSid -eq $status.sessionId) { [System.Drawing.Color]::FromArgb(244, 238, 224) } else { [System.Drawing.Color]::FromArgb(250, 249, 245) })
+    if (-not $card.Visible) { $card.Show($form) }
+  }
+  Place-Cards
+}
+
+function Toggle-Cards {
   $script:cardCollapsed = -not $script:cardCollapsed
   if ($script:cardCollapsed) { Write-Utf8 $collapsePath '1' }
   elseif (Test-Path -LiteralPath $collapsePath) { Remove-Item -LiteralPath $collapsePath -Force -ErrorAction SilentlyContinue }
   if ($toggleCardItem) { $toggleCardItem.Checked = -not $script:cardCollapsed }
-  Update-Card
+  Update-Cards
   Write-Log ('card-collapsed={0}' -f [int]$script:cardCollapsed)
 }
 
@@ -398,20 +509,16 @@ $resetItem.add_Click({
   Write-Utf8 $posPath "$($script:x),$($script:y)"
 })
 $toggleCardItem = New-Object System.Windows.Forms.ToolStripMenuItem
-$toggleCardItem.Text = 'Show status card'; $toggleCardItem.Checked = -not (Test-Path -LiteralPath $collapsePath)
-$toggleCardItem.add_Click({ Toggle-Card })
+$toggleCardItem.Text = 'Show status cards'; $toggleCardItem.Checked = -not (Test-Path -LiteralPath $collapsePath)
+$toggleCardItem.add_Click({ Toggle-Cards })
 [void]$menu.Items.Add($toggleCardItem)
 
-$initialStatus = Get-LatestStatus
-$script:state = $initialStatus.state
-$script:targetPid = [int]$initialStatus.hostPid
-$script:targetTerminalPid = [int]$initialStatus.terminalPid
-$script:targetTerminalKey = [string]$initialStatus.terminalKey
-$script:targetWindow = [IntPtr]::Zero
-$script:targetTabElement = $null
-$script:targetResolveUntil = (Get-Date).AddSeconds(3)
-$script:lastEventId = ''
+$script:sessions = @(); $script:sessionsById = @{}
+$script:latestSid = ''; $script:selectedSid = ''; $script:state = 'idle'
+$script:targetCache = @{}
+$script:lastModelSig = ''
 $script:cardCollapsed = Test-Path -LiteralPath $collapsePath
+Refresh-SessionModel
 $script:pointerDown = $false
 $script:dragging = $false
 $script:dragStartX = 0; $script:dragStartY = 0
@@ -468,7 +575,7 @@ function Get-TerminalMarker([string]$Key) {
 }
 
 function Find-MarkedTerminalTarget([int]$TerminalPid, [string]$TerminalKey) {
-  if ($TerminalPid -le 0) { return $null }
+  if ($TerminalPid -le 0 -or $TerminalKey -notmatch '^[0-9a-f]{10}$') { return $null }
   try {
     $rootElement = [System.Windows.Automation.AutomationElement]::RootElement
     $windowCondition = New-Object System.Windows.Automation.PropertyCondition(
@@ -485,7 +592,7 @@ function Find-MarkedTerminalTarget([int]$TerminalPid, [string]$TerminalKey) {
     foreach ($windowElement in $windows) {
       $items = $windowElement.FindAll([System.Windows.Automation.TreeScope]::Descendants, $tabCondition)
       foreach ($item in $items) {
-        if ($item.Current.Name -eq $marker) {
+        if ([string]$item.Current.Name -ceq $marker) {
           $matches += @{ Window = [IntPtr]$windowElement.Current.NativeWindowHandle; Tab = $item }
         }
       }
@@ -495,49 +602,102 @@ function Find-MarkedTerminalTarget([int]$TerminalPid, [string]$TerminalKey) {
   } catch { return $null }
 }
 
-function Remember-MarkedTerminalTarget {
-  $target = Find-MarkedTerminalTarget $script:targetTerminalPid $script:targetTerminalKey
-  if (-not $target) { return $false }
-  $script:targetWindow = [IntPtr]$target.Window
-  $script:targetTabElement = $target.Tab
-  Write-Log ('target-resolved terminalPid={0} hwnd={1} markerMatched=1' -f $script:targetTerminalPid, $script:targetWindow.ToInt64())
+function Remember-MarkedTerminalTarget([string]$SessionId, $Status) {
+  if (-not $Status) { return $false }
+  $target = Find-MarkedTerminalTarget ([int]$Status.terminalPid) ([string]$Status.terminalKey)
+  if (-not $target) {
+    [void]$script:targetCache.Remove($SessionId)
+    return $false
+  }
+  $script:targetCache[$SessionId] = @{
+    TerminalPid = [int]$Status.terminalPid; Key = [string]$Status.terminalKey
+    Window = [IntPtr]$target.Window; Tab = $target.Tab
+  }
+  Write-Log ('target-resolved sid={0} terminalPid={1} hwnd={2} markerMatched=1' -f $SessionId.Substring(0, 6), $Status.terminalPid, ([IntPtr]$target.Window).ToInt64())
   return $true
 }
 
-function Select-RememberedTerminalTab {
-  if ($script:targetWindow -eq [IntPtr]::Zero -or -not $script:targetTabElement) { return $false }
-  try {
-    $pattern = $null
-    if (-not $script:targetTabElement.TryGetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern, [ref]$pattern)) { return $false }
-    $pattern.Select()
-    return $true
-  } catch { return $false }
+function Select-SessionTerminal([string]$SessionId, $Status) {
+  for ($attempt = 0; $attempt -lt 2; $attempt++) {
+    $cached = $null
+    if ($script:targetCache.ContainsKey($SessionId)) {
+      $candidate = $script:targetCache[$SessionId]
+      if ($candidate.TerminalPid -eq [int]$Status.terminalPid -and $candidate.Key -ceq [string]$Status.terminalKey -and [SaturnNative]::IsValidWindow($candidate.Window)) {
+        $cached = $candidate
+      } else { [void]$script:targetCache.Remove($SessionId) }
+    }
+    if (-not $cached) {
+      if (-not (Remember-MarkedTerminalTarget $SessionId $Status)) { return [IntPtr]::Zero }
+      $cached = $script:targetCache[$SessionId]
+    }
+    try {
+      $pattern = $null
+      if ($cached.Tab.TryGetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern, [ref]$pattern)) {
+        $pattern.Select()
+        return [IntPtr]$cached.Window
+      }
+    } catch {}
+    [void]$script:targetCache.Remove($SessionId)
+  }
+  return [IntPtr]::Zero
 }
 
-function Focus-Antigravity {
-  $targetPid = $script:targetPid
+function Focus-Session([string]$SessionId) {
+  if (-not $SessionId -or -not $script:sessionsById.ContainsKey($SessionId)) {
+    $script:shakeTicks = 8; Write-Log 'focus no-session'; return
+  }
+  $status = $script:sessionsById[$SessionId]
+  $targetPid = [int]$status.hostPid
   $window = [IntPtr]::Zero
   $tabSelected = $false
-  if ($script:targetTerminalPid -gt 0) {
-    if (-not [SaturnNative]::IsValidWindow($script:targetWindow) -or -not $script:targetTabElement) {
-      [void](Remember-MarkedTerminalTarget)
-    }
-    $tabSelected = Select-RememberedTerminalTab
-    if (-not $tabSelected -and (Remember-MarkedTerminalTarget)) { $tabSelected = Select-RememberedTerminalTab }
-    if ($tabSelected) { $window = $script:targetWindow }
+  if ([int]$status.terminalPid -gt 0) {
+    $window = Select-SessionTerminal $SessionId $status
+    $tabSelected = ($window -ne [IntPtr]::Zero)
   } else {
     $window = Find-HostWindow $targetPid
-    if ($window -eq [IntPtr]::Zero) { $window = [SaturnNative]::FindAntigravityWindow() }
+    if ($window -eq [IntPtr]::Zero -and $script:sessions.Count -eq 1) { $window = [SaturnNative]::FindAntigravityWindow() }
   }
   $ok = [SaturnNative]::Activate($window)
   if (-not $ok) { $script:shakeTicks = 8 }
-  Write-Log ('focus targetPid={0} hwnd={1} tabSelected={2} ok={3}' -f $targetPid, $window.ToInt64(), [int]$tabSelected, [int]$ok)
+  if ($ok) { $script:selectedSid = $SessionId; Update-Cards }
+  Write-Log ('focus sid={0} targetPid={1} hwnd={2} tabSelected={3} ok={4}' -f $SessionId.Substring(0, 6), $targetPid, $window.ToInt64(), [int]$tabSelected, [int]$ok)
 }
 
-$focusHandler = { Focus-Antigravity }
-$card.add_Click($focusHandler); $cardTitle.add_Click($focusHandler); $cardDot.add_Click($focusHandler); $cardState.add_Click($focusHandler)
-$cardClose.add_Click({ Toggle-Card })
-$form.add_DoubleClick({ Toggle-Card }); $card.add_DoubleClick({ Toggle-Card }); $cardTitle.add_DoubleClick({ Toggle-Card }); $cardState.add_DoubleClick({ Toggle-Card })
+function Dismiss-SessionCard([int]$Index) {
+  if ($Index -lt 0 -or $Index -ge $MAXCARDS) { return }
+  $sid = $script:rowSids[$Index]
+  if (-not $sid -or -not $script:sessionsById.ContainsKey($sid)) { return }
+  $status = $script:sessionsById[$sid]
+  Write-Utf8 (Get-DismissPath $sid) ([string]$status.eventId)
+  Write-Log ('card-dismissed sid={0}' -f $sid.Substring(0, 6))
+  Update-Cards
+}
+
+function Rename-SessionCard([int]$Index) {
+  if ($Index -lt 0 -or $Index -ge $MAXCARDS) { return }
+  $sid = $script:rowSids[$Index]; if (-not $sid) { return }
+  $current = Get-SessionName $sid
+  $value = [Microsoft.VisualBasic.Interaction]::InputBox('Name this Antigravity session:', 'Rename Saturn card', $current)
+  $name = ([string]$value -replace '[\x00-\x1F\x7F]', ' ').Trim()
+  if (-not $name) { return }
+  if ($name.Length -gt 60) { $name = $name.Substring(0, 60) }
+  Write-Utf8 (Get-NamePath $sid) $name
+  Write-Log ('card-renamed sid={0}' -f $sid.Substring(0, 6))
+  Update-Cards
+}
+
+$focusHandler = { param($sender, $event) $idx = [int]$sender.Tag; Focus-Session $script:rowSids[$idx] }
+$dismissHandler = { param($sender, $event) Dismiss-SessionCard ([int]$sender.Tag) }
+$renameHandler = { param($sender, $event) Rename-SessionCard ([int]$sender.Tag) }
+$collapseHandler = { Toggle-Cards }
+for ($i = 0; $i -lt $MAXCARDS; $i++) {
+  $script:cards[$i].add_Click($focusHandler); $script:cardTitles[$i].add_Click($focusHandler)
+  $script:cardDots[$i].add_Click($focusHandler); $script:cardStates[$i].add_Click($focusHandler)
+  $script:cardCloses[$i].add_Click($dismissHandler); $script:cardEdits[$i].add_Click($renameHandler)
+  $script:cards[$i].add_DoubleClick($collapseHandler); $script:cardTitles[$i].add_DoubleClick($collapseHandler)
+  $script:cardStates[$i].add_DoubleClick($collapseHandler)
+}
+$form.add_DoubleClick($collapseHandler)
 
 $form.add_MouseDown({ param($sender, $event)
   if ($event.Button -eq [System.Windows.Forms.MouseButtons]::Left) {
