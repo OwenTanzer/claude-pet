@@ -178,8 +178,7 @@ public static class SaturnNative {
                 GetWindowText(h, titleBuffer, titleBuffer.Capacity);
                 string title = titleBuffer.ToString();
                 bool processMatch = processName.StartsWith("Antigravity", StringComparison.OrdinalIgnoreCase);
-                bool titleMatch = title.IndexOf("Antigravity", StringComparison.OrdinalIgnoreCase) >= 0;
-                if (!processMatch && !titleMatch) return true;
+                if (!processMatch) return true;
                 RECT rect;
                 long area = 1;
                 if (GetWindowRect(h, out rect)) area = Math.Max(1, (long)(rect.Right - rect.Left) * (rect.Bottom - rect.Top));
@@ -267,8 +266,8 @@ if (-not $acquired) { exit 0 }
 function Get-LatestStatus {
   $file = Get-ChildItem -LiteralPath $eventsDir -Filter '*.json' -File -ErrorAction SilentlyContinue |
     Sort-Object Name -Descending | Select-Object -First 1
-  if (-not $file) { return @{ state = 'idle'; hostPid = 0; terminalPid = 0; eventId = '' } }
-  try { $event = (Read-Utf8 $file.FullName) | ConvertFrom-Json } catch { return @{ state = 'idle'; hostPid = 0; terminalPid = 0; eventId = '' } }
+  if (-not $file) { return @{ state = 'idle'; hostPid = 0; terminalPid = 0; terminalKey = ''; eventId = '' } }
+  try { $event = (Read-Utf8 $file.FullName) | ConvertFrom-Json } catch { return @{ state = 'idle'; hostPid = 0; terminalPid = 0; terminalKey = ''; eventId = '' } }
   $age = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() - [long]$event.timestampMs
   if ($age -lt 0) { $age = 0 }
   $hostPid = 0
@@ -276,13 +275,15 @@ function Get-LatestStatus {
   elseif ($event.PSObject.Properties['hookParentPid']) { [void][int]::TryParse(($event.hookParentPid + ''), [ref]$hostPid) }
   $terminalPid = 0
   if ($event.PSObject.Properties['terminalPid']) { [void][int]::TryParse(($event.terminalPid + ''), [ref]$terminalPid) }
+  $terminalKey = ''
+  if ($event.PSObject.Properties['terminalKey'] -and (($event.terminalKey + '') -match '^[0-9a-f]{10}$')) { $terminalKey = [string]$event.terminalKey }
   $state = 'idle'
   switch ([string]$event.state) {
     'done' { if ($age -le 10000) { $state = 'done' } }
     'attention' { if ($age -le 1800000) { $state = 'attention' } }
     'working' { if ($age -le 1800000) { $state = 'working' } }
   }
-  return @{ state = $state; hostPid = $hostPid; terminalPid = $terminalPid; eventId = $file.Name }
+  return @{ state = $state; hostPid = $hostPid; terminalPid = $terminalPid; terminalKey = $terminalKey; eventId = $file.Name }
 }
 
 $desktopGraphics = [System.Drawing.Graphics]::FromHwnd([IntPtr]::Zero)
@@ -405,8 +406,10 @@ $initialStatus = Get-LatestStatus
 $script:state = $initialStatus.state
 $script:targetPid = [int]$initialStatus.hostPid
 $script:targetTerminalPid = [int]$initialStatus.terminalPid
-$script:targetTabTitle = ''
+$script:targetTerminalKey = [string]$initialStatus.terminalKey
 $script:targetWindow = [IntPtr]::Zero
+$script:targetTabElement = $null
+$script:targetResolveUntil = (Get-Date).AddSeconds(3)
 $script:lastEventId = ''
 $script:cardCollapsed = Test-Path -LiteralPath $collapsePath
 $script:pointerDown = $false
@@ -452,49 +455,60 @@ function Find-HostWindow([int]$StartPid) {
     $born = $null; try { $born = [DateTime]$info.CreationDate } catch {}
     if ($childBorn -and $born -and $born -gt $childBorn.AddSeconds(2)) { break }
     $process = Get-Process -Id $current -ErrorAction SilentlyContinue
-    if ($process -and $process.MainWindowHandle.ToInt64() -ne 0) { return $process.MainWindowHandle }
+    if ($process -and $process.ProcessName -ne 'WindowsTerminal' -and $process.MainWindowHandle.ToInt64() -ne 0) { return $process.MainWindowHandle }
     if ($born) { $childBorn = $born }
     $current = 0; if ($info.ParentProcessId) { $current = [int]$info.ParentProcessId }
   }
   return [IntPtr]::Zero
 }
 
-function Capture-TargetTab {
-  $targetPid = $script:targetPid
-  $window = Find-HostWindow $targetPid
-  if ($window -eq [IntPtr]::Zero) {
-    $agy = Get-Process -Name 'agy' -ErrorAction SilentlyContinue | Sort-Object StartTime -Descending | Select-Object -First 1
-    if ($agy) { $targetPid = $agy.Id; $script:targetPid = $targetPid; $window = Find-HostWindow $targetPid }
-  }
-  if ($window -eq [IntPtr]::Zero) { return }
-  $ownerPid = [SaturnNative]::WindowPid($window)
-  $owner = Get-Process -Id $ownerPid -ErrorAction SilentlyContinue
-  if ($owner -and $owner.ProcessName -eq 'WindowsTerminal') {
-    $title = [SaturnNative]::WindowTitle($window)
-    if ($title) {
-      $script:targetWindow = $window
-      $script:targetTerminalPid = $ownerPid
-      $script:targetTabTitle = $title
-      Write-Log ('tab-capture targetPid={0} terminalPid={1} tabTitleCaptured=1' -f $targetPid, $ownerPid)
-    }
-  }
+function Get-TerminalMarker([string]$Key) {
+  if ($Key -match '^[0-9a-f]{10}$') { return ('Saturn - Antigravity CLI [{0}]' -f $Key) }
+  return 'Saturn - Antigravity CLI'
 }
 
-function Select-TerminalTab([IntPtr]$Window, [string]$Title) {
-  if ($Window -eq [IntPtr]::Zero -or -not $Title) { return $false }
+function Find-MarkedTerminalTarget([int]$TerminalPid, [string]$TerminalKey) {
+  if ($TerminalPid -le 0) { return $null }
   try {
-    $rootElement = [System.Windows.Automation.AutomationElement]::FromHandle($Window)
-    if (-not $rootElement) { return $false }
-    $condition = New-Object System.Windows.Automation.PropertyCondition(
+    $rootElement = [System.Windows.Automation.AutomationElement]::RootElement
+    $windowCondition = New-Object System.Windows.Automation.PropertyCondition(
+      [System.Windows.Automation.AutomationElement]::ProcessIdProperty,
+      $TerminalPid
+    )
+    $windows = $rootElement.FindAll([System.Windows.Automation.TreeScope]::Children, $windowCondition)
+    $tabCondition = New-Object System.Windows.Automation.PropertyCondition(
       [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
       [System.Windows.Automation.ControlType]::TabItem
     )
-    $items = $rootElement.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
+    $marker = Get-TerminalMarker $TerminalKey
     $matches = @()
-    foreach ($item in $items) { if ($item.Current.Name -eq $Title) { $matches += $item } }
-    if ($matches.Count -ne 1) { return $false }
+    foreach ($windowElement in $windows) {
+      $items = $windowElement.FindAll([System.Windows.Automation.TreeScope]::Descendants, $tabCondition)
+      foreach ($item in $items) {
+        if ($item.Current.Name -eq $marker) {
+          $matches += @{ Window = [IntPtr]$windowElement.Current.NativeWindowHandle; Tab = $item }
+        }
+      }
+    }
+    if ($matches.Count -ne 1) { return $null }
+    return $matches[0]
+  } catch { return $null }
+}
+
+function Remember-MarkedTerminalTarget {
+  $target = Find-MarkedTerminalTarget $script:targetTerminalPid $script:targetTerminalKey
+  if (-not $target) { return $false }
+  $script:targetWindow = [IntPtr]$target.Window
+  $script:targetTabElement = $target.Tab
+  Write-Log ('target-resolved terminalPid={0} hwnd={1} markerMatched=1' -f $script:targetTerminalPid, $script:targetWindow.ToInt64())
+  return $true
+}
+
+function Select-RememberedTerminalTab {
+  if ($script:targetWindow -eq [IntPtr]::Zero -or -not $script:targetTabElement) { return $false }
+  try {
     $pattern = $null
-    if (-not $matches[0].TryGetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern, [ref]$pattern)) { return $false }
+    if (-not $script:targetTabElement.TryGetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern, [ref]$pattern)) { return $false }
     $pattern.Select()
     return $true
   } catch { return $false }
@@ -502,14 +516,19 @@ function Select-TerminalTab([IntPtr]$Window, [string]$Title) {
 
 function Focus-Antigravity {
   $targetPid = $script:targetPid
-  $window = Find-HostWindow $targetPid
-  if ($window -eq [IntPtr]::Zero) {
-    $agy = Get-Process -Name 'agy' -ErrorAction SilentlyContinue | Sort-Object StartTime -Descending | Select-Object -First 1
-    if ($agy) { $targetPid = $agy.Id; $window = Find-HostWindow $targetPid }
-  }
-  if ($window -eq [IntPtr]::Zero) { $window = [SaturnNative]::FindAntigravityWindow() }
+  $window = [IntPtr]::Zero
   $tabSelected = $false
-  if ($window -ne [IntPtr]::Zero -and $script:targetTabTitle) { $tabSelected = Select-TerminalTab $window $script:targetTabTitle }
+  if ($script:targetTerminalPid -gt 0) {
+    if (-not [SaturnNative]::IsValidWindow($script:targetWindow) -or -not $script:targetTabElement) {
+      [void](Remember-MarkedTerminalTarget)
+    }
+    $tabSelected = Select-RememberedTerminalTab
+    if (-not $tabSelected -and (Remember-MarkedTerminalTarget)) { $tabSelected = Select-RememberedTerminalTab }
+    if ($tabSelected) { $window = $script:targetWindow }
+  } else {
+    $window = Find-HostWindow $targetPid
+    if ($window -eq [IntPtr]::Zero) { $window = [SaturnNative]::FindAntigravityWindow() }
+  }
   $ok = [SaturnNative]::Activate($window)
   if (-not $ok) { $script:shakeTicks = 8 }
   Write-Log ('focus targetPid={0} hwnd={1} tabSelected={2} ok={3}' -f $targetPid, $window.ToInt64(), [int]$tabSelected, [int]$ok)
@@ -577,16 +596,30 @@ $timer.add_Tick({
     $status = Get-LatestStatus
     $newState = $status.state
     if ([int]$status.hostPid -gt 0) { $script:targetPid = [int]$status.hostPid }
-    if ([int]$status.terminalPid -gt 0) { $script:targetTerminalPid = [int]$status.terminalPid }
+    if ([int]$status.terminalPid -gt 0 -and [int]$status.terminalPid -ne $script:targetTerminalPid) {
+      $script:targetTerminalPid = [int]$status.terminalPid
+      $script:targetWindow = [IntPtr]::Zero
+      $script:targetTabElement = $null
+    }
     if ($status.eventId -and $status.eventId -ne $script:lastEventId) {
       $script:lastEventId = $status.eventId
-      Capture-TargetTab
+      $newTerminalKey = [string]$status.terminalKey
+      if ($newTerminalKey -ne $script:targetTerminalKey) {
+        $script:targetTerminalKey = $newTerminalKey
+        $script:targetWindow = [IntPtr]::Zero
+        $script:targetTabElement = $null
+      }
+      $script:targetResolveUntil = $now.AddSeconds(3)
+      [void](Remember-MarkedTerminalTarget)
     }
     if ($newState -ne $script:state) {
       Write-Log ("state=$newState")
       $script:state = $newState
       Update-Card
     }
+  }
+  if ($now -lt $script:targetResolveUntil -and (-not [SaturnNative]::IsValidWindow($script:targetWindow) -or -not $script:targetTabElement)) {
+    [void](Remember-MarkedTerminalTarget)
   }
   if (($now - $script:lastTopmost).TotalMilliseconds -ge 2000) {
     $script:lastTopmost = $now

@@ -9,6 +9,7 @@ const path = require('node:path');
 const MAX_INPUT_BYTES = 1024 * 1024;
 const MAX_EVENT_FILES = 500;
 const KEEP_EVENT_FILES = 400;
+const TAB_TITLE_PREFIX = 'Saturn - Antigravity CLI';
 const KNOWN_EVENTS = new Set([
   'PreInvocation',
   'PostInvocation',
@@ -57,6 +58,36 @@ function conversationKey(value) {
   return crypto.createHash('sha256').update(raw).digest('hex').slice(0, 20);
 }
 
+function terminalKey(env = process.env) {
+  const session = typeof env.WT_SESSION === 'string' ? env.WT_SESSION.trim() : '';
+  if (!session) return '';
+  return crypto.createHash('sha256').update(session).digest('hex').slice(0, 10);
+}
+
+function terminalTitle(key = '') {
+  return key ? `${TAB_TITLE_PREFIX} [${key}]` : TAB_TITLE_PREFIX;
+}
+
+function markTerminalTab(title, writer) {
+  const sequence = `\u001b]0;${title}\u0007`;
+  if (writer) {
+    try { writer(sequence); return true; } catch { return false; }
+  }
+  let marked = false;
+  try {
+    const fd = fs.openSync('\\\\.\\CONOUT$', 'w');
+    try { fs.writeSync(fd, sequence, null, 'utf8'); } finally { fs.closeSync(fd); }
+    marked = true;
+  } catch { /* fall through to the console-title command */ }
+  try {
+    const result = childProcess.spawnSync('cmd.exe', ['/d', '/c', 'title', title], {
+      stdio: 'ignore', timeout: 1000, windowsHide: true,
+    });
+    if (result.status === 0) marked = true;
+  } catch { /* hooks remain non-blocking */ }
+  return marked;
+}
+
 function discoverHostProcess(parentPid = process.ppid) {
   const safeParentPid = Number.isInteger(parentPid) && parentPid > 0 ? parentPid : process.ppid;
   const fallback = { hookParentPid: safeParentPid, hostPid: safeParentPid, terminalPid: 0 };
@@ -102,6 +133,9 @@ function normalizeEvent(eventName, payload, now = Date.now(), host = discoverHos
     terminalPid: host.terminalPid,
     timestampMs: now,
   };
+  if (typeof host.terminalKey === 'string' && /^[0-9a-f]{10}$/.test(host.terminalKey)) {
+    record.terminalKey = host.terminalKey;
+  }
 
   if (Number.isInteger(payload.stepIdx)) record.stepIdx = payload.stepIdx;
   if (Number.isInteger(payload.invocationNum)) record.invocationNum = payload.invocationNum;
@@ -170,7 +204,14 @@ function main() {
   });
   process.stdin.on('end', () => {
     let response = responseFor(eventName);
-    try { response = handle(eventName, parseInput(input)); } catch { /* hooks must remain non-blocking */ }
+    try {
+      const host = discoverHostProcess();
+      host.terminalKey = terminalKey();
+      const title = terminalTitle(host.terminalKey);
+      markTerminalTab(title);
+      response = handle(eventName, parseInput(input), { host });
+      markTerminalTab(title);
+    } catch { /* hooks must remain non-blocking */ }
     process.stdout.write(`${JSON.stringify(response)}\n`);
   });
 }
@@ -182,9 +223,12 @@ module.exports = {
   discoverHostProcess,
   getDataRoot,
   handle,
+  markTerminalTab,
   mapState,
   normalizeEvent,
   parseInput,
   responseFor,
+  terminalKey,
+  terminalTitle,
   writeEvent,
 };

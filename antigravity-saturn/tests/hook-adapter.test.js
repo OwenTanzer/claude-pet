@@ -10,7 +10,7 @@ const adapter = require(path.resolve(__dirname, '..', 'scripts', 'saturn-hook.js
 function invoke(dataRoot, eventName, payload) {
   return adapter.handle(eventName, payload, {
     dataRoot,
-    host: { hookParentPid: 123, hostPid: 456, terminalPid: 789 },
+    host: { hookParentPid: 123, hostPid: 456, terminalPid: 789, terminalKey: '0123456789' },
   });
 }
 
@@ -47,11 +47,22 @@ test('hook contracts and normalized state records stay privacy-safe', (t) => {
   assert.deepEqual(records.map((record) => record.state), ['working', 'working', 'working', 'working', 'done']);
   assert.equal(new Set(records.map((record) => record.conversationKey)).size, 1);
   assert.equal(records.every((record) => Number.isInteger(record.hookParentPid) && record.hookParentPid > 0), true);
-  assert.equal(records.every((record) => record.hostPid === 456 && record.terminalPid === 789), true);
+  assert.equal(records.every((record) => record.hostPid === 456 && record.terminalPid === 789 && record.terminalKey === '0123456789'), true);
   const persisted = JSON.stringify(records);
   for (const secret of ['the-real-conversation-id', 'secret-project', 'transcript.jsonl', 'DO NOT STORE THIS PROMPT', 'SECRET COMMAND']) {
     assert.equal(persisted.includes(secret), false, `persisted secret: ${secret}`);
   }
+});
+
+test('terminal identity is session-specific and the marker bypasses hook stdout', () => {
+  const key = adapter.terminalKey({ WT_SESSION: '{2fd244e0-a33f-4ebe-8b67-b6e88f6f4270}' });
+  assert.match(key, /^[0-9a-f]{10}$/);
+  assert.equal(adapter.terminalKey({}), '');
+  assert.equal(adapter.terminalTitle(key), `Saturn - Antigravity CLI [${key}]`);
+
+  let marker = '';
+  assert.equal(adapter.markTerminalTab(adapter.terminalTitle(key), (sequence) => { marker = sequence; }), true);
+  assert.equal(marker, `\u001b]0;Saturn - Antigravity CLI [${key}]\u0007`);
 });
 
 test('reliable errors surface attention and background stops remain working', (t) => {
