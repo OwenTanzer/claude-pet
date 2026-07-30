@@ -43,10 +43,9 @@ $cpid = 0
 try { $cpid = [int](Get-Process -Id $PID -ErrorAction Stop).Parent.Id } catch {}
 if ($cpid -le 0) { try { $cpid = [int](Get-CimInstance Win32_Process -Filter "ProcessId=$PID" -ErrorAction Stop).ParentProcessId } catch {} }
 
-# session record field 8 = unused placeholder (WT tab-level jump removed; WT jumps are
-# window-level only). field 9 = transcript path (interrupt detection), field 10 = cwd;
-# both self-heal on the next real event. field 8 kept empty so 9/10 keep their indices --
-# do NOT renumber. See pet-event.ps1 for the rationale.
+# Session record field 8 remains an unused placeholder. field 9 = transcript path,
+# field 10 = cwd, field 11 = detail author, and field 12 = the short Windows Terminal
+# session key. Keeping field 8 empty preserves the established indices.
 $tp = ''; if ($j) { $tp = [string]$j.transcript_path }
 function CleanRec($s) {
   if (-not $s) { return '' }
@@ -54,16 +53,33 @@ function CleanRec($s) {
   if ($s.Length -gt 200) { $s = $s.Substring(0, 200) }
   return $s
 }
-$fp = ''   # field 8 unused (WT tab jump removed); empty placeholder, do NOT renumber fields
+$fp = ''   # field 8 unused; empty placeholder, do NOT renumber fields
 $tpF = CleanRec $tp
 $cwdF = CleanRec $cwd   # field 10: workspace hint for VS Code multi-window jump
+function Get-TerminalKey {
+  if (-not $env:WT_SESSION) { return '' }
+  try {
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { $hash = $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes([string]$env:WT_SESSION)) } finally { $sha.Dispose() }
+    return ([BitConverter]::ToString($hash).Replace('-', '').Substring(0, 10).ToLowerInvariant())
+  } catch { return '' }
+}
+function Set-TerminalMarker($key) {
+  if (-not $key) { return }
+  $marker = "Moon - Claude Code [$key]"
+  try { $Host.UI.RawUI.WindowTitle = $marker } catch {}
+  try { [Console]::Title = $marker } catch {}
+  try { & cmd.exe /d /c "title $marker" | Out-Null } catch {}
+}
+$terminalKey = Get-TerminalKey
+Set-TerminalMarker $terminalKey
 
 # Register this window's card WITHOUT clobbering an ongoing session's real title/state.
 #   clear   -> conversation reset: fresh idle card + drop the rename lock
 #   new sid -> idle placeholder card
 #   resume / compact / re-register of an existing session -> leave its card untouched
 $epoch = [long]([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())
-$idleRec = (('idle', '空闲', $projOr, '', "$epoch", '', "$cpid", $fp, $tpF, $cwdF) -join "`t")
+$idleRec = (('idle', '空闲', $projOr, '', "$epoch", '', "$cpid", $fp, $tpF, $cwdF, '', $terminalKey) -join "`t")
 if ($src -eq 'clear') {
   Remove-Item "$file.titlelock", "$file.pending" -Force -ErrorAction SilentlyContinue
   [IO.File]::WriteAllText($file, $idleRec, (New-Object Text.UTF8Encoding($false)))
@@ -74,17 +90,18 @@ if ($src -eq 'clear') {
   # epoch are the session's memory -- see ARCHITECTURE pitfall 8), but the claude PID
   # (field 7) must follow the session into its new claude.exe; field 9 (transcript path)
   # and field 10 (cwd) are refreshed too so the interrupt watch and multi-window jump
-  # track the resumed window. field 8 is unused now (WT tab jump removed) and any stale
-  # value is cleared. This also back-fills records written before these fields.
+  # track the resumed window. field 12 follows the exact Windows Terminal session, while
+  # field 8 stays empty. This also back-fills records written before these fields.
   try {
     $c = [IO.File]::ReadAllText($file, [Text.Encoding]::UTF8)
     if ($c) {
-      $p = $c -split "`t"; while ($p.Count -lt 10) { $p += '' }
+      $p = $c -split "`t"; while ($p.Count -lt 12) { $p += '' }
       $dirty = $false
       if ($p[6] -ne "$cpid") { $p[6] = "$cpid"; $dirty = $true }
       if ($p[7]) { $p[7] = ''; $dirty = $true }                        # field 8 unused: clear any stale fingerprint
       if ($tpF -and $p[8] -ne $tpF) { $p[8] = $tpF; $dirty = $true }
       if ($cwdF -and $p[9] -ne $cwdF) { $p[9] = $cwdF; $dirty = $true }
+      if ($p[11] -ne $terminalKey) { $p[11] = $terminalKey; $dirty = $true }
       if ($dirty) { [IO.File]::WriteAllText($file, ($p -join "`t"), (New-Object Text.UTF8Encoding($false))) }
     }
   } catch {}

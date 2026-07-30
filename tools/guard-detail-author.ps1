@@ -13,7 +13,7 @@ $fail=@(); function Red($m){ $script:fail+=$m; Write-Host "RED  $m" }; function 
 $ev = [IO.File]::ReadAllText($EV, [Text.Encoding]::UTF8)
 if($ev -match 'function ExistingAuthor'){ Grn "pet-event: ExistingAuthor helper (reads field 11)" } else { Red "pet-event: ExistingAuthor missing" }
 if($ev -match 'function WriteSession\(\$key, \$label, \$title, \$detail, \$model, \$detailAuthor\)'){ Grn "pet-event: WriteSession takes \$detailAuthor" } else { Red "pet-event: WriteSession has no author param" }
-if($ev -match '\$cwdF, \$detailAuthor\) -join'){ Grn "pet-event: author appended to the record (field 11)" } else { Red "pet-event: author not written to the record" }
+if($ev -match '\$cwdF, \$detailAuthor, \$terminalKeyF\) -join'){ Grn "pet-event: author remains field 11 before terminal key" } else { Red "pet-event: author not written at field 11" }
 if($ev -match 'if \(\$null -eq \$detailAuthor\) \{ \$detailAuthor = ExistingAuthor \}'){ Grn "pet-event: author defaults to ExistingAuthor (carried)" } else { Red "pet-event: author carry-default missing" }
 if($ev -match "WriteSession 'thinking' '.+' \`$title \`$clean \`$null 'user'"){ Grn "pet-event: prompt -> author='user'" } else { Red "pet-event: prompt does not set author='user'" }
 if($ev -match "WriteSession 'done' '.+' \(TitleOr\) \`$r\.text \`$r\.model 'claude'"){ Grn "pet-event: done(reply) -> author='claude'" } else { Red "pet-event: done(reply) does not set author='claude'" }
