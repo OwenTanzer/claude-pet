@@ -5,6 +5,10 @@ $ErrorActionPreference = 'SilentlyContinue'
 $code = $PSScriptRoot
 $dir = Join-Path $env:USERPROFILE '.claude\pet-data'
 if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+# Select the real lunar phase before a resident is launched. The selector is
+# offline and writes its metadata last, which is the resident's reload signal.
+$moonSelector = Join-Path $code 'lunar-phase.js'
+if (Test-Path $moonSelector) { & node $moonSelector | Out-Null }
 $sessDir = Join-Path $dir 'sessions'
 if (-not (Test-Path $sessDir)) { New-Item -ItemType Directory -Path $sessDir | Out-Null }
 $pf = Join-Path $dir 'pet.pid'

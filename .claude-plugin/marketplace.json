@@ -1,11 +1,12 @@
 {
-  "name": "shin620265",
-  "owner": { "name": "SHIN620265" },
+  "name": "owentanzer",
+  "owner": { "name": "Owen Tanzer" },
+  "description": "Owen Tanzer's public Claude Code pet experiments and lunar desktop companions.",
   "plugins": [
     {
       "name": "claude-pet",
       "source": "./pet",
-      "description": "Desktop companion for Claude Code (Windows): per-session status cards + soft chimes for thinking / needs-input / done. Multilingual, with a /my-pet toggle."
+      "description": "Moon companion for Claude Code on Windows: real lunar phases, per-session status cards, terminal focus, and soft chimes."
     }
   ]
 }

@@ -21,3 +21,5 @@ title.txt
 
 # Note: scripts, strings.json, the chimes (done.wav / attn.wav) and the
 # mascot frames (claude-*.png) ARE shipped, so they are intentionally tracked.
+# Local lunar-phase test fixtures
+pet/.tmp/

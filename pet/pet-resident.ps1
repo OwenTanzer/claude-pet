@@ -791,6 +791,21 @@ function Jump-Row($idx) {
   if (-not $ok) { $script:shakeN = 6 }   # honest feedback: cannot place this session
   LogEv ('jump idx={0} pid={1} hwnd={2} ok={3} cache={4} req={5}' -f $idx, $cp, $hv, [int]$ok, $hit, $rq)
 }
+function Jump-Pet {
+  if ($script:editing) { return }
+  $sid = $script:petJumpSid; $cp = $script:petJumpPid
+  if (-not $sid -or -not $cp) { $script:shakeN = 6; LogEv 'pet jump no-target'; return }
+  # Jump-Row remains the single validated activation path. Temporarily lend it
+  # row 0 on the UI thread so a dismissed/hidden card can still be the pet's
+  # independent most-recent terminal target, then restore the display mapping.
+  $oldSid = $script:rowSids[0]; $oldPid = $script:rowPids[0]
+  try {
+    $script:rowSids[0] = $sid; $script:rowPids[0] = $cp
+    Jump-Row 0
+  } finally {
+    $script:rowSids[0] = $oldSid; $script:rowPids[0] = $oldPid
+  }
+}
 
 $g0 = [System.Drawing.Graphics]::FromHwnd([IntPtr]::Zero); $scale = $g0.DpiX / 96.0; $g0.Dispose()
 $w = [int](148 * $scale)
@@ -816,11 +831,22 @@ if (Test-Path $posPath) {
   }
 }
 
-$script:frames = @{
-  idle  = [Lp]::Prep((Join-Path $root 'claude-idle.png'),  $w, $w)
-  blink = [Lp]::Prep((Join-Path $root 'claude-blink.png'), $w, $w)
-  happy = [Lp]::Prep((Join-Path $root 'claude-happy.png'), $w, $w)
+function Load-SpriteFrames {
+  $loaded = @{}
+  try {
+    $loaded.idle  = [Lp]::Prep((Join-Path $root 'claude-idle.png'),  $w, $w)
+    $loaded.blink = [Lp]::Prep((Join-Path $root 'claude-blink.png'), $w, $w)
+    $loaded.happy = [Lp]::Prep((Join-Path $root 'claude-happy.png'), $w, $w)
+    return $loaded
+  } catch {
+    foreach ($f in $loaded.Values) { try { $f.Dispose() } catch {} }
+    throw
+  }
 }
+$script:frames = Load-SpriteFrames
+$script:lunarMetaPath = Join-Path $root 'lunar-phase.json'
+$script:spriteStamp = 0L
+if (Test-Path $script:lunarMetaPath) { $script:spriteStamp = (Get-Item $script:lunarMetaPath).LastWriteTimeUtc.Ticks }
 $PID | Set-Content $pidPath -ErrorAction SilentlyContinue
 
 $form = New-Object PetWin
@@ -1237,7 +1263,13 @@ function Update-Tip($hr, $hi) {
 # ---- state ----
 $script:curFrame = ''; $script:dispX = -99999; $script:dispY = -99999
 $script:bobOff = 0; $script:bobPhase = 0.0
-$script:dragging = $false; $script:dragOffX = 0; $script:dragOffY = 0
+$script:pointerDown = $false; $script:dragging = $false
+$script:dragStartX = 0; $script:dragStartY = 0; $script:dragOffX = 0; $script:dragOffY = 0
+$dragSize = [System.Windows.Forms.SystemInformation]::DragSize
+# A desktop mascot needs more forgiveness than a list-row drag. Use twice the
+# Windows drag metric (at least 8 px) so normal click jitter remains a click.
+$script:dragThresholdX = [Math]::Max(8, [int]($dragSize.Width * 2))
+$script:dragThresholdY = [Math]::Max(8, [int]($dragSize.Height * 2))
 $now0 = Get-Date
 $script:nextBlink = $now0.AddSeconds((Get-Random -Minimum 2.4 -Maximum 4.0))
 $script:blinkUntil = $now0; $script:reactUntil = $now0; $script:startAt = $now0; $script:lastClaude = $now0
@@ -1248,10 +1280,12 @@ $script:cardShown = $false; $script:cardH = $rowH; $script:lastSig = '__'; $scri
 $script:selRow = -2; $script:selectedSid = ''   # the last-clicked card stays lit (selection tracked by sid, follows re-sorts)
 $script:lastKeys = @{}; $script:rowKeys = New-Object 'string[]' $MAXROWS; $script:rowSids = New-Object 'string[]' $MAXROWS; $script:firstPoll = $true
 $script:rowPids = New-Object 'string[]' $MAXROWS; $script:shakeN = 0
+$script:petJumpSid = ''; $script:petJumpPid = ''           # independent of visible/dismissed card rows
 $script:jumpCache = @{}; $script:lastWarm = $now0   # claudePid -> host HWND (pre-warmed so the first click is instant)
 $script:jumpChain = @{}   # claudePid -> ancestor PID chain from that walk (consumed by the VS Code companion handshake)
 $script:lastIntr = $now0
 $script:lastBg = $now0                                   # background-running detection cadence
+$script:lastSpriteCheck = $now0                          # lunar asset reload cadence
 $script:bgState = @{}; $script:bgShape = @{}             # per-sid N-scan ledgers + shape-drift candidates
 $script:bgSids = New-Object 'System.Collections.Generic.HashSet[string]'   # sids currently overlaid "background running"
 $script:bgEvidence = @{}                                                   # sid -> @(what-is-running items); in-memory only (never persisted, R7)
@@ -1274,6 +1308,19 @@ function Render($key) {
   if ($key -ne $script:curFrame -or $tx -ne $script:dispX -or $ty -ne $script:dispY) {
     [Lp]::SetBitmap($form.Handle, $script:frames[$key], $tx, $ty); $script:curFrame = $key; $script:dispX = $tx; $script:dispY = $ty
   }
+}
+function Reload-SpriteFramesIfChanged {
+  if (-not (Test-Path $script:lunarMetaPath)) { return }
+  $stamp = (Get-Item $script:lunarMetaPath -ErrorAction SilentlyContinue).LastWriteTimeUtc.Ticks
+  if (-not $stamp -or $stamp -eq $script:spriteStamp) { return }
+  $next = $null
+  try { $next = Load-SpriteFrames } catch { return }
+  $previous = $script:frames
+  $script:frames = $next
+  $script:spriteStamp = $stamp
+  $script:curFrame = ''
+  foreach ($f in $previous.Values) { try { $f.Dispose() } catch {} }
+  LogEv 'lunar sprites reloaded'
 }
 function Place-Card {
   if ($script:shakeN -gt 0) { return }   # let the head-shake finish; its last tick re-places
@@ -1299,6 +1346,7 @@ function Update-Card {
   $prv = (((RU (Join-Path $root 'privacy.txt')) + '').Trim().ToLower() -eq 'on')
   if ($prv -ne $script:privacy) { $script:privacy = $prv; $miPrivacy.Checked = $prv; $script:lastSig = '__'; $script:privEpoch++; Hide-Tip }
   $list = @()
+  $jumpList = @()
   foreach ($f in @(Get-ChildItem $sessDir -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -notmatch '\.' })) {
     $c = RU $f.FullName; if (-not $c) { continue }
     $p = $c -split "`t"; if ($p.Count -lt 2) { continue }
@@ -1308,6 +1356,7 @@ function Update-Card {
     # keeps its identity; physical deletion only after 7 days of silence
     $idleMs = $now - $epoch
     if ($idleMs -gt 604800000) { Remove-Item $f.FullName, "$($f.FullName).dismiss", "$($f.FullName).titlelock", "$($f.FullName).pending" -Force -ErrorAction SilentlyContinue; continue }
+    $jumpList += [pscustomobject]@{ sid=$f.Name; key=$p[0]; epoch=$epoch; cpid=$(if($p.Count -ge 7){$p[6]}else{''}) }
     if ($idleMs -gt 1800000) { continue }
     $dp = "$($f.FullName).dismiss"
     if (Test-Path $dp) { $de = 0L; [long]::TryParse((RU $dp), [ref]$de) | Out-Null; if ($de -ge $epoch) { continue } }
@@ -1322,6 +1371,11 @@ function Update-Card {
     $bgGenL = $(if ($bgr -and $script:bgGen.ContainsKey($f.Name)) { $script:bgGen[$f.Name] } else { 0 })
     $list += [pscustomobject]@{ sid=$f.Name; key=$p[0]; label=$p[1]; title=$ttl; detail=$dtl; detailAuthor=$(if($p.Count -ge 11){$p[10]}else{''}); epoch=$epoch; model=$(if($p.Count -ge 6){$p[5]}else{''}); cpid=$(if($p.Count -ge 7){$p[6]}else{''}); bg=$bgr; bgWhat=$bgWhatL; bgGen=$bgGenL }
   }
+  # Pet clicks target the attention-first / newest recorded terminal even when
+  # its card is dismissed, hidden by TTL, collapsed, or outside the three rows.
+  $jumpList = @($jumpList | Where-Object { $_.cpid } | Sort-Object @{Expression={ if ($_.key -eq 'attention') { 0 } else { 1 } }}, @{Expression={ $_.epoch }; Descending=$true})
+  if ($jumpList.Count) { $script:petJumpSid = $jumpList[0].sid; $script:petJumpPid = $jumpList[0].cpid }
+  else { $script:petJumpSid = ''; $script:petJumpPid = '' }
   # minimal hybrid: float 'attention' (needs you) to the top; everything else stays newest-first
   $list = @($list | Sort-Object @{Expression={ if ($_.key -eq 'attention') { 0 } else { 1 } }}, @{Expression={ $_.epoch }; Descending=$true})
   # overflow = eligible-but-not-shown sessions (dismissed/hidden already filtered out above)
@@ -1341,7 +1395,14 @@ function Update-Card {
 
   if ((Test-Path $collapsePath) -or $list.Count -eq 0) {
     if ($script:cardShown) { $card.Hide(); $script:cardShown = $false }
-    for ($i=0; $i -lt $MAXROWS; $i++){ $script:rowKeys[$i] = ''; $script:rowSids[$i] = ''; $script:rowPids[$i] = ''; $script:rowBg[$i] = $false }
+    # Hidden cards still need live row targets: clicking the pet must jump even
+    # while collapsed, and interrupt/background watches should not go stale.
+    for ($i=0; $i -lt $MAXROWS; $i++) {
+      if ($i -lt $list.Count) { $script:rowKeys[$i] = $list[$i].key; $script:rowSids[$i] = $list[$i].sid; $script:rowPids[$i] = $list[$i].cpid; $script:rowBg[$i] = $list[$i].bg }
+      else { $script:rowKeys[$i] = ''; $script:rowSids[$i] = ''; $script:rowPids[$i] = ''; $script:rowBg[$i] = $false }
+    }
+    $script:cardList = $list
+    $script:lastSig = '__collapsed__'   # force a complete row/map rebuild on expand
     return
   }
 
@@ -1416,15 +1477,26 @@ function Update-Card {
 
 $form.add_MouseDown({ param($s,$e)
   if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Left) {
-    $script:dragging = $true; $form.Capture = $true
-    $cpos = [System.Windows.Forms.Cursor]::Position; $script:dragOffX = $cpos.X - $script:x; $script:dragOffY = $cpos.Y - $script:y
+    $script:pointerDown = $true; $script:dragging = $false; $form.Capture = $true
+    $cpos = [System.Windows.Forms.Cursor]::Position
+    $script:dragStartX = $cpos.X; $script:dragStartY = $cpos.Y
+    $script:dragOffX = $cpos.X - $script:x; $script:dragOffY = $cpos.Y - $script:y
   }
 })
 $form.add_MouseMove({ param($s,$e)
-  if ($script:dragging) { $cpos = [System.Windows.Forms.Cursor]::Position; $script:x = $cpos.X - $script:dragOffX; $script:y = $cpos.Y - $script:dragOffY; $script:bobOff = 0; Render 'happy'; Place-Card }
+  if ($script:pointerDown) {
+    $cpos = [System.Windows.Forms.Cursor]::Position
+    if (-not $script:dragging -and ([Math]::Abs($cpos.X - $script:dragStartX) -ge $script:dragThresholdX -or [Math]::Abs($cpos.Y - $script:dragStartY) -ge $script:dragThresholdY)) { $script:dragging = $true }
+    if ($script:dragging) { $script:x = $cpos.X - $script:dragOffX; $script:y = $cpos.Y - $script:dragOffY; $script:bobOff = 0; Render 'happy'; Place-Card }
+  }
 })
 $form.add_MouseUp({ param($s,$e)
-  if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Left -and $script:dragging) { $script:dragging = $false; $form.Capture = $false; "$($script:x),$($script:y)" | Set-Content $posPath -ErrorAction SilentlyContinue }
+  if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Left -and $script:pointerDown) {
+    $wasDrag = $script:dragging
+    $script:pointerDown = $false; $script:dragging = $false; $form.Capture = $false
+    if ($wasDrag) { "$($script:x),$($script:y)" | Set-Content $posPath -ErrorAction SilentlyContinue; LogEv 'pet gesture=drag' }
+    else { LogEv 'pet gesture=click'; Jump-Pet }
+  }
   elseif ($e.Button -eq [System.Windows.Forms.MouseButtons]::Right) { Hide-Tip; $menu.Show($form, $form.PointToClient([System.Windows.Forms.Cursor]::Position)) }   # owner-show keeps the menu above owned/topmost siblings
 })
 $form.add_DoubleClick({ if (Test-Path $collapsePath) { Remove-Item $collapsePath -Force } else { New-Item -ItemType File $collapsePath -Force | Out-Null } })
@@ -1443,6 +1515,10 @@ $tick = New-Object System.Windows.Forms.Timer
 $tick.Interval = 60
 $tick.add_Tick({
   $now = Get-Date
+  if (($now - $script:lastSpriteCheck).TotalMilliseconds -ge 2000) {
+    $script:lastSpriteCheck = $now
+    Reload-SpriteFramesIfChanged
+  }
   if (-not $script:editing -and ($script:fsDirty -or ($now - $script:lastPoll).TotalMilliseconds -ge 120)) { $script:fsDirty = $false; $script:lastPoll = $now; Update-Card }
   # head-shake: brief lateral wiggle of the card = "cannot jump for this row" (no i18n,
   # no dialog); the final tick snaps the card back via Place-Card (guarded while shaking)

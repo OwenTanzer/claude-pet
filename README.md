@@ -2,6 +2,8 @@
 
 🌸 一只住在桌面、帮你盯 Claude Code 进度的小宠物。
 A little desktop mascot that watches your Claude Code progress for you.
+
+> This is Owen Tanzer's lunar-phase fork of [Peng Shen's original claude-pet](https://github.com/SHIN620265/claude-pet), preserving the original MIT attribution while adding the Moon character, real lunar phases, live sprite reloading, and click-to-terminal navigation.
 Claude Code の進捗を見守る、デスクトップの小さなマスコット。
 
 <p align="center"><img src="docs/demo.gif" width="420" alt="Claude Desktop Pet — a status card cycling through needs-your-input → thinking → done, with the mascot reacting"></p>
@@ -19,20 +21,20 @@ Claude Code の進捗を見守る、デスクトップの小さなマスコッ�
 ## 中文
 
 ### 这是什么?
-一只待在你 Windows 桌面上的小宠物。它盯着你正在跑的 Claude Code 对话,用**卡片**和**轻提示音**告诉你:Claude 是在**思考**、在**等你做选择**、还是**已经做完了**——这样你不用一直盯着命令行窗口。需要你确认权限时,约 **1 秒**内就会提醒——不必等 Claude Code 自带通知的 6 秒延迟。它也很轻:装到本地的插件约 **250KB**(纯 PowerShell 脚本 + 音效立绘),没有 Electron、没有捆绑运行时,只是 PowerShell 驱动着 Windows 自带的界面组件。
+一只待在你 Windows 桌面上的小宠物。它盯着你正在跑的 Claude Code 对话,用**卡片**和**轻提示音**告诉你:Claude 是在**思考**、在**等你做选择**、还是**已经做完了**——这样你不用一直盯着命令行窗口。需要你确认权限时,约 **1 秒**内就会提醒——不必等 Claude Code 自带通知的 6 秒延迟。它也很轻:装到本地的插件约 **530KB**(纯 PowerShell 脚本 + 音效立绘),没有 Electron、没有捆绑运行时,只是 PowerShell 驱动着 Windows 自带的界面组件。
 
 ### 安装
 **需要:** Windows ・ **Claude Code**(请保持最新版——即时权限提醒依赖较新的钩子能力)・ **PowerShell 7**(命令 `pwsh`;没有就 `winget install Microsoft.PowerShell`,或到 Microsoft Store 搜 "PowerShell" 安装)
 
 在 Claude Code 里输入两条命令——Claude 会**直接从 GitHub 拉取**,不用手动下载:
 ```
-/plugin marketplace add shin620265/claude-pet
-/plugin install claude-pet@shin620265
+/plugin marketplace add OwenTanzer/claude-pet
+/plugin install claude-pet@owentanzer
 ```
 然后运行 **`/reload-plugins`** 让它在当前会话生效(**首次安装也要这步**;无需重启、不丢终端标签。或者开一个新的 Claude 会话,它也会自动生效)。
 
 完成!用 `/my-pet` 打开宠物(之后会记住,新会话自动出现)。
-**卸载:** `/plugin uninstall claude-pet@shin620265`(想彻底清理,再删除 `~/.claude/pet-data` 文件夹——存的是设置与卡片记忆)
+**卸载:** `/plugin uninstall claude-pet@owentanzer`(想彻底清理,再删除 `~/.claude/pet-data` 文件夹——存的是设置与卡片记忆)
 
 > 已经把仓库 clone / 下载到本地了?把第一条换成 `/plugin marketplace add <本地文件夹路径>` 即可,其余不变。
 
@@ -60,9 +62,9 @@ Claude Code の進捗を見守る、デスクトップの小さなマスコッ�
 ### 更新到新版本
 在 Claude Code 里**依次**输入这四条(`install` 时选 user scope):
 ```
-/plugin marketplace update shin620265
-/plugin uninstall claude-pet@shin620265
-/plugin install claude-pet@shin620265
+/plugin marketplace update owentanzer
+/plugin uninstall claude-pet@owentanzer
+/plugin install claude-pet@owentanzer
 /reload-plugins
 ```
 这样**当前会话**就用上新版了。
@@ -94,20 +96,20 @@ Claude Code の進捗を見守る、デスクトップの小さなマスコッ�
 ## English
 
 ### What is this?
-A little mascot that lives on your Windows desktop. It watches your running Claude Code conversations and tells you — with **cards** and a **soft chime** — whether Claude is **thinking**, **waiting for your choice**, or **done**. So you don't have to keep staring at the terminal. When Claude needs your permission, you're alerted within about **1 second** — no waiting for Claude Code's built-in 6-second notification delay. It's light, too: the installed plugin is **about 250KB** (pure PowerShell scripts plus sounds and sprites) — no Electron, no bundled runtime, just PowerShell driving Windows' built-in UI stack.
+A little mascot that lives on your Windows desktop. It watches your running Claude Code conversations and tells you — with **cards** and a **soft chime** — whether Claude is **thinking**, **waiting for your choice**, or **done**. So you don't have to keep staring at the terminal. When Claude needs your permission, you're alerted within about **1 second** — no waiting for Claude Code's built-in 6-second notification delay. It's light, too: the installed plugin is **about 530KB** (pure PowerShell scripts plus sounds and sprites) — no Electron, no bundled runtime, just PowerShell driving Windows' built-in UI stack.
 
 ### Install
 **Requires:** Windows ・ **Claude Code** (keep it up to date — the instant permission alerts rely on newer hook capabilities) ・ **PowerShell 7** (the `pwsh` command; if you don't have it: `winget install Microsoft.PowerShell`, or install "PowerShell" from the Microsoft Store)
 
 In Claude Code, run two commands — Claude fetches it **straight from GitHub**, no manual download:
 ```
-/plugin marketplace add shin620265/claude-pet
-/plugin install claude-pet@shin620265
+/plugin marketplace add OwenTanzer/claude-pet
+/plugin install claude-pet@owentanzer
 ```
 Then run **`/reload-plugins`** to activate it in your current session (**needed on first install too**; no restart, keeps your terminals — or just start a new Claude session and it activates automatically).
 
 Done — open the pet with `/my-pet` (it remembers, and appears automatically in new sessions).
-**Uninstall:** `/plugin uninstall claude-pet@shin620265` (for a full cleanup, also delete the `~/.claude/pet-data` folder — it holds settings and card memory)
+**Uninstall:** `/plugin uninstall claude-pet@owentanzer` (for a full cleanup, also delete the `~/.claude/pet-data` folder — it holds settings and card memory)
 
 > Already cloned/downloaded the repo? Replace the first command with `/plugin marketplace add <path-to-the-local-folder>` — everything else is the same.
 
@@ -123,7 +125,7 @@ Done — open the pet with `/my-pet` (it remembers, and appears automatically in
 1. **Open/close**: type `/my-pet` in Claude Code (it remembers; reappears next time you open Claude Code, disappears once all are closed).
 2. **Just watch**: when Claude finishes or needs a choice, it chimes and the card lights up with the matching state.
 3. **Jump**: **single-click a card = bring that session's window to the foreground** (a coral ring appears on hover; the card shakes its head when the window can't be located — it never jumps to the wrong one). With the optional [VS Code companion extension](vscode-ext/claude-pet-jump/), the same click also lands on **that session's exact terminal tab**.
-4. **Actions**: drag = move (remembered); double-click = collapse/expand cards; per row **✎** = rename, **×** = dismiss (comes back on new activity); **right-click** = menu (close pet / reset position / sound / privacy mode / language).
+4. **Actions**: single-click the pet = focus the attention-first or most-recent Claude terminal; deliberate drag = move (remembered, without focusing; ordinary click jitter is ignored); double-click = collapse/expand cards; per row **✎** = rename, **×** = dismiss (comes back on new activity); **right-click** = menu (close pet / reset position / sound / privacy mode / language).
 
 ### Settings
 - **Language**: right-click → "Language" → 中文/English/日本語/Auto (Auto follows your system); switches instantly.
@@ -135,9 +137,9 @@ Done — open the pet with `/my-pet` (it remembers, and appears automatically in
 ### Updating
 In Claude Code, run these **in order** (choose user scope for `install`):
 ```
-/plugin marketplace update shin620265
-/plugin uninstall claude-pet@shin620265
-/plugin install claude-pet@shin620265
+/plugin marketplace update owentanzer
+/plugin uninstall claude-pet@owentanzer
+/plugin install claude-pet@owentanzer
 /reload-plugins
 ```
 That updates the **current session**.
@@ -169,20 +171,20 @@ If this little pet is useful to you, a ⭐ helps more people find it 🌸
 ## 日本語
 
 ### これは何?
-Windows のデスクトップに住む小さなマスコットです。実行中の Claude Code の会話を見守り、**カード**と**やさしい通知音**で、Claude が今**考え中**か、**あなたの選択待ち**か、**完了した**かを知らせます。ターミナルをずっと見ていなくても進捗がわかります。権限の確認が必要なときは約 **1 秒**で通知——Claude Code 内蔵通知の 6 秒遅延を待ちません。とても軽量です:インストールされるプラグインは約 **250KB**(PowerShell スクリプト + 音声・スプライト)——Electron もバンドルランタイムもなく、PowerShell が Windows 標準の UI を動かしているだけです。
+Windows のデスクトップに住む小さなマスコットです。実行中の Claude Code の会話を見守り、**カード**と**やさしい通知音**で、Claude が今**考え中**か、**あなたの選択待ち**か、**完了した**かを知らせます。ターミナルをずっと見ていなくても進捗がわかります。権限の確認が必要なときは約 **1 秒**で通知——Claude Code 内蔵通知の 6 秒遅延を待ちません。とても軽量です:インストールされるプラグインは約 **530KB**(PowerShell スクリプト + 音声・スプライト)——Electron もバンドルランタイムもなく、PowerShell が Windows 標準の UI を動かしているだけです。
 
 ### インストール
 **必要:** Windows ・ **Claude Code**(最新版を推奨——即時の権限通知は新しめのフック機能に依存)・ **PowerShell 7**(`pwsh` コマンド。無ければ `winget install Microsoft.PowerShell`、または Microsoft Store で "PowerShell" を検索してインストール)
 
 Claude Code で2つのコマンドを実行——Claude が **GitHub から直接取得**します(手動ダウンロード不要):
 ```
-/plugin marketplace add shin620265/claude-pet
-/plugin install claude-pet@shin620265
+/plugin marketplace add OwenTanzer/claude-pet
+/plugin install claude-pet@owentanzer
 ```
 その後 **`/reload-plugins`** を実行して現在のセッションで有効化(**初回インストールでも必要**。再起動不要・ターミナル保持。新しい Claude セッションを開けば自動で有効化)。
 
 完了!`/my-pet` でペットを開きます(記憶され、新しいセッションでは自動表示)。
-**アンインストール:** `/plugin uninstall claude-pet@shin620265`(完全に削除するには `~/.claude/pet-data` フォルダーも削除——設定とカードの記憶が入っています)
+**アンインストール:** `/plugin uninstall claude-pet@owentanzer`(完全に削除するには `~/.claude/pet-data` フォルダーも削除——設定とカードの記憶が入っています)
 
 > すでにリポジトリを clone / ダウンロード済み?最初のコマンドを `/plugin marketplace add <ローカルフォルダのパス>` に置き換えるだけ。あとは同じです。
 
@@ -210,9 +212,9 @@ Claude Code で2つのコマンドを実行——Claude が **GitHub から直�
 ### 更新
 Claude Code で**順に**実行(`install` では user scope を選択):
 ```
-/plugin marketplace update shin620265
-/plugin uninstall claude-pet@shin620265
-/plugin install claude-pet@shin620265
+/plugin marketplace update owentanzer
+/plugin uninstall claude-pet@owentanzer
+/plugin install claude-pet@owentanzer
 /reload-plugins
 ```
 これで**現在のセッション**が更新されます。

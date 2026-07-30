@@ -1,11 +1,11 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "claude-pet",
-  "displayName": "Claude Desktop Pet",
-  "version": "1.5.0",
-  "description": "A desktop companion (Windows) that watches your Claude Code sessions and tells you - with status cards and a soft chime - when Claude is thinking, needs your input, or is done - and flags a card that's still running a background task. Hover a card to see everything.",
-  "author": { "name": "Peng Shen" },
-  "homepage": "https://github.com/SHIN620265/claude-pet",
-  "repository": "https://github.com/SHIN620265/claude-pet",
+  "displayName": "Claude Moon Pet",
+  "version": "1.6.0",
+  "description": "A Windows desktop Moon companion that follows the real lunar cycle, watches Claude Code sessions, focuses the latest terminal when clicked, and signals when Claude needs attention.",
+  "author": { "name": "Peng Shen and Owen Tanzer" },
+  "homepage": "https://github.com/OwenTanzer/claude-pet",
+  "repository": "https://github.com/OwenTanzer/claude-pet",
   "license": "MIT"
 }
