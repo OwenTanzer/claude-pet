@@ -295,7 +295,7 @@ function Get-SessionStatuses {
     if ($event.PSObject.Properties['terminalKey'] -and (($event.terminalKey + '') -match '^[0-9a-f]{10}$')) { $terminalKey = [string]$event.terminalKey }
     $state = 'idle'
     switch ([string]$event.state) {
-      'done' { if ($age -le 10000) { $state = 'done' } }
+      'done' { if ($age -le 1800000) { $state = 'done' } }
       'attention' { if ($age -le 1800000) { $state = 'attention' } }
       'working' { if ($age -le 1800000) { $state = 'working' } }
     }
@@ -753,48 +753,40 @@ $timer.add_Tick({
   $script:frameTick++
   if ($script:stateDirty -or ($now - $script:lastStatePoll).TotalMilliseconds -ge 1000) {
     $script:stateDirty = $false; $script:lastStatePoll = $now
-    $status = Get-LatestStatus
-    $newState = $status.state
-    if ([int]$status.hostPid -gt 0) { $script:targetPid = [int]$status.hostPid }
-    if ([int]$status.terminalPid -gt 0 -and [int]$status.terminalPid -ne $script:targetTerminalPid) {
-      $script:targetTerminalPid = [int]$status.terminalPid
-      $script:targetWindow = [IntPtr]::Zero
-      $script:targetTabElement = $null
+    Refresh-SessionModel
+    foreach ($cachedSid in @($script:targetCache.Keys)) {
+      if (-not $script:sessionsById.ContainsKey($cachedSid)) { [void]$script:targetCache.Remove($cachedSid) }
     }
-    if ($status.eventId -and $status.eventId -ne $script:lastEventId) {
-      $script:lastEventId = $status.eventId
-      $newTerminalKey = [string]$status.terminalKey
-      if ($newTerminalKey -ne $script:targetTerminalKey) {
-        $script:targetTerminalKey = $newTerminalKey
-        $script:targetWindow = [IntPtr]::Zero
-        $script:targetTabElement = $null
+    $modelSig = (($script:sessions | ForEach-Object { $_.sessionId + ':' + $_.eventId + ':' + $_.state }) -join '|')
+    if ($modelSig -ne $script:lastModelSig) {
+      $script:lastModelSig = $modelSig
+      Write-Log ('sessions={0} state={1}' -f $script:sessions.Count, $script:state)
+    }
+    Update-Cards
+    foreach ($sid in $script:rowSids) {
+      if (-not $sid -or $script:targetCache.ContainsKey($sid)) { continue }
+      $status = $script:sessionsById[$sid]
+      if ($status -and [int]$status.terminalPid -gt 0) {
+        [void](Remember-MarkedTerminalTarget $sid $status)
+        break
       }
-      $script:targetResolveUntil = $now.AddSeconds(3)
-      [void](Remember-MarkedTerminalTarget)
     }
-    if ($newState -ne $script:state) {
-      Write-Log ("state=$newState")
-      $script:state = $newState
-      Update-Card
-    }
-  }
-  if ($now -lt $script:targetResolveUntil -and (-not [SaturnNative]::IsValidWindow($script:targetWindow) -or -not $script:targetTabElement)) {
-    [void](Remember-MarkedTerminalTarget)
   }
   if (($now - $script:lastTopmost).TotalMilliseconds -ge 2000) {
     $script:lastTopmost = $now
     [SaturnNative]::KeepTopmost($form.Handle)
-    if ($card.Visible) { [SaturnNative]::KeepTopmost($card.Handle) }
+    foreach ($card in $script:cards) { if ($card.Visible) { [SaturnNative]::KeepTopmost($card.Handle) } }
   }
   Render-Saturn
 })
 
-$form.add_Shown({ Render-Saturn; Update-Card; $timer.Start() })
+$form.add_Shown({ Render-Saturn; Update-Cards; $timer.Start() })
 $PID | Set-Content -LiteralPath $pidPath -Encoding ASCII
 Write-Log ('resident-start pid={0}' -f $PID)
 [System.Windows.Forms.Application]::Run($form)
 
-$timer.Stop(); $timer.Dispose(); $watcher.Dispose(); $menu.Dispose(); $card.Dispose()
+$timer.Stop(); $timer.Dispose(); $watcher.Dispose(); $menu.Dispose()
+foreach ($card in $script:cards) { try { $card.Dispose() } catch {} }
 foreach ($frame in $script:frames.Values) { try { $frame.Dispose() } catch {} }
 Remove-Item -LiteralPath $pidPath -Force -ErrorAction SilentlyContinue
 try { $script:residentMutex.ReleaseMutex() } catch {}
