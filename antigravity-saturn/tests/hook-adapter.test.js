@@ -8,7 +8,10 @@ const test = require('node:test');
 const adapter = require(path.resolve(__dirname, '..', 'scripts', 'saturn-hook.js'));
 
 function invoke(dataRoot, eventName, payload) {
-  return adapter.handle(eventName, payload, { dataRoot });
+  return adapter.handle(eventName, payload, {
+    dataRoot,
+    host: { hookParentPid: 123, hostPid: 456, terminalPid: 789 },
+  });
 }
 
 test('hook contracts and normalized state records stay privacy-safe', (t) => {
@@ -44,6 +47,7 @@ test('hook contracts and normalized state records stay privacy-safe', (t) => {
   assert.deepEqual(records.map((record) => record.state), ['working', 'working', 'working', 'working', 'done']);
   assert.equal(new Set(records.map((record) => record.conversationKey)).size, 1);
   assert.equal(records.every((record) => Number.isInteger(record.hookParentPid) && record.hookParentPid > 0), true);
+  assert.equal(records.every((record) => record.hostPid === 456 && record.terminalPid === 789), true);
   const persisted = JSON.stringify(records);
   for (const secret of ['the-real-conversation-id', 'secret-project', 'transcript.jsonl', 'DO NOT STORE THIS PROMPT', 'SECRET COMMAND']) {
     assert.equal(persisted.includes(secret), false, `persisted secret: ${secret}`);

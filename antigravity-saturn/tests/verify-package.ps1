@@ -22,7 +22,10 @@ Assert-True ($resident.Contains('.gemini\antigravity-saturn')) 'Saturn data root
 Assert-True (-not $resident.Contains('ClaudePetResident')) 'Saturn collides with the Claude pet mutex'
 Assert-True (-not $resident.Contains('.claude\pet-data')) 'Saturn collides with the Claude pet data root'
 Assert-True ($resident.Contains('Find-HostWindow')) 'Saturn does not resolve CLI host terminals'
+Assert-True ($resident.Contains('Select-TerminalTab')) 'Saturn does not select its Windows Terminal tab'
+Assert-True (-not $resident.Contains("tabTitle={2}")) 'Saturn persists the captured terminal tab title in its log'
 Assert-True ($resident.Contains('Antigravity CLI')) 'Saturn status card is missing'
+Assert-True ($resident.Contains('card-collapsed.flag')) 'Saturn card collapse state is not remembered'
 
 $smokeRoot = Join-Path ([IO.Path]::GetTempPath()) ('saturn-smoke-' + [Guid]::NewGuid().ToString('N'))
 try {

@@ -16,6 +16,7 @@ $eventsDir = Join-Path $DataRoot 'events'
 $pidPath = Join-Path $DataRoot 'resident.pid'
 $posPath = Join-Path $DataRoot 'position.txt'
 $logPath = Join-Path $DataRoot 'resident.log'
+$collapsePath = Join-Path $DataRoot 'card-collapsed.flag'
 
 function Read-Utf8([string]$Path) {
   if (Test-Path -LiteralPath $Path) {
@@ -69,6 +70,7 @@ if ($SmokeTest) {
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
+Add-Type -AssemblyName UIAutomationClient
 
 $native = @"
 using System;
@@ -154,6 +156,13 @@ public static class SaturnNative {
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetWindowText(IntPtr h, StringBuilder text, int max);
     [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out RECT rect);
     [StructLayout(LayoutKind.Sequential)] struct RECT { public int Left, Top, Right, Bottom; }
+    public static string WindowTitle(IntPtr h) {
+        try { StringBuilder text = new StringBuilder(512); GetWindowText(h, text, text.Capacity); return text.ToString(); }
+        catch { return ""; }
+    }
+    public static int WindowPid(IntPtr h) {
+        try { uint pid; GetWindowThreadProcessId(h, out pid); return (int)pid; } catch { return 0; }
+    }
 
     public static IntPtr FindAntigravityWindow() {
         IntPtr best = IntPtr.Zero;
@@ -258,19 +267,22 @@ if (-not $acquired) { exit 0 }
 function Get-LatestStatus {
   $file = Get-ChildItem -LiteralPath $eventsDir -Filter '*.json' -File -ErrorAction SilentlyContinue |
     Sort-Object Name -Descending | Select-Object -First 1
-  if (-not $file) { return @{ state = 'idle'; hostPid = 0 } }
-  try { $event = (Read-Utf8 $file.FullName) | ConvertFrom-Json } catch { return @{ state = 'idle'; hostPid = 0 } }
+  if (-not $file) { return @{ state = 'idle'; hostPid = 0; terminalPid = 0; eventId = '' } }
+  try { $event = (Read-Utf8 $file.FullName) | ConvertFrom-Json } catch { return @{ state = 'idle'; hostPid = 0; terminalPid = 0; eventId = '' } }
   $age = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() - [long]$event.timestampMs
   if ($age -lt 0) { $age = 0 }
   $hostPid = 0
-  if ($event.PSObject.Properties['hookParentPid']) { [void][int]::TryParse(($event.hookParentPid + ''), [ref]$hostPid) }
+  if ($event.PSObject.Properties['hostPid']) { [void][int]::TryParse(($event.hostPid + ''), [ref]$hostPid) }
+  elseif ($event.PSObject.Properties['hookParentPid']) { [void][int]::TryParse(($event.hookParentPid + ''), [ref]$hostPid) }
+  $terminalPid = 0
+  if ($event.PSObject.Properties['terminalPid']) { [void][int]::TryParse(($event.terminalPid + ''), [ref]$terminalPid) }
   $state = 'idle'
   switch ([string]$event.state) {
     'done' { if ($age -le 10000) { $state = 'done' } }
     'attention' { if ($age -le 1800000) { $state = 'attention' } }
     'working' { if ($age -le 1800000) { $state = 'working' } }
   }
-  return @{ state = $state; hostPid = $hostPid }
+  return @{ state = $state; hostPid = $hostPid; terminalPid = $terminalPid; eventId = $file.Name }
 }
 
 $desktopGraphics = [System.Drawing.Graphics]::FromHwnd([IntPtr]::Zero)
@@ -323,7 +335,7 @@ $roundPath.CloseFigure(); $card.Region = New-Object System.Drawing.Region($round
 
 $cardTitle = New-Object System.Windows.Forms.Label
 $cardTitle.AutoSize = $false; $cardTitle.Location = New-Object System.Drawing.Point([int](20*$scale), [int](11*$scale))
-$cardTitle.Size = New-Object System.Drawing.Size([int](228*$scale), [int](25*$scale))
+$cardTitle.Size = New-Object System.Drawing.Size([int](205*$scale), [int](25*$scale))
 $cardTitle.Font = New-Object System.Drawing.Font('Segoe UI', 11, [System.Drawing.FontStyle]::Bold)
 $cardTitle.ForeColor = [System.Drawing.Color]::FromArgb(44, 43, 48); $cardTitle.BackColor = [System.Drawing.Color]::Transparent
 $cardTitle.Text = 'Antigravity CLI'
@@ -339,7 +351,13 @@ $cardState.AutoSize = $false; $cardState.Location = New-Object System.Drawing.Po
 $cardState.Size = New-Object System.Drawing.Size([int](205*$scale), [int](21*$scale))
 $cardState.Font = New-Object System.Drawing.Font('Segoe UI', 9.5)
 $cardState.BackColor = [System.Drawing.Color]::Transparent
-[void]$card.Controls.Add($cardTitle); [void]$card.Controls.Add($cardDot); [void]$card.Controls.Add($cardState)
+$cardClose = New-Object System.Windows.Forms.Label
+$cardClose.AutoSize = $false; $cardClose.Location = New-Object System.Drawing.Point([int](239*$scale), [int](8*$scale))
+$cardClose.Size = New-Object System.Drawing.Size([int](20*$scale), [int](20*$scale))
+$cardClose.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
+$cardClose.ForeColor = [System.Drawing.Color]::FromArgb(150, 150, 155); $cardClose.BackColor = [System.Drawing.Color]::Transparent
+$cardClose.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter; $cardClose.Text = 'x'; $cardClose.Cursor = [System.Windows.Forms.Cursors]::Hand
+[void]$card.Controls.Add($cardTitle); [void]$card.Controls.Add($cardDot); [void]$card.Controls.Add($cardState); [void]$card.Controls.Add($cardClose)
 
 function Place-Card {
   $cx = $script:x - $cardWidth - $cardGap
@@ -349,6 +367,7 @@ function Place-Card {
 }
 
 function Update-Card {
+  if ($script:cardCollapsed) { if ($card.Visible) { $card.Hide() }; return }
   switch ($script:state) {
     'working' { $label = 'Working'; $color = [System.Drawing.Color]::FromArgb(76, 119, 190) }
     'attention' { $label = 'Needs attention'; $color = [System.Drawing.Color]::FromArgb(214, 139, 45) }
@@ -360,6 +379,15 @@ function Update-Card {
   if (-not $card.Visible) { $card.Show($form) }
 }
 
+function Toggle-Card {
+  $script:cardCollapsed = -not $script:cardCollapsed
+  if ($script:cardCollapsed) { Write-Utf8 $collapsePath '1' }
+  elseif (Test-Path -LiteralPath $collapsePath) { Remove-Item -LiteralPath $collapsePath -Force -ErrorAction SilentlyContinue }
+  if ($toggleCardItem) { $toggleCardItem.Checked = -not $script:cardCollapsed }
+  Update-Card
+  Write-Log ('card-collapsed={0}' -f [int]$script:cardCollapsed)
+}
+
 $menu = New-Object System.Windows.Forms.ContextMenuStrip
 $closeItem = $menu.Items.Add('Close Saturn')
 $closeItem.add_Click({ [System.Windows.Forms.Application]::Exit() })
@@ -368,10 +396,19 @@ $resetItem.add_Click({
   $script:x = $script:defaultX; $script:y = $script:defaultY
   Write-Utf8 $posPath "$($script:x),$($script:y)"
 })
+$toggleCardItem = New-Object System.Windows.Forms.ToolStripMenuItem
+$toggleCardItem.Text = 'Show status card'; $toggleCardItem.Checked = -not (Test-Path -LiteralPath $collapsePath)
+$toggleCardItem.add_Click({ Toggle-Card })
+[void]$menu.Items.Add($toggleCardItem)
 
 $initialStatus = Get-LatestStatus
 $script:state = $initialStatus.state
 $script:targetPid = [int]$initialStatus.hostPid
+$script:targetTerminalPid = [int]$initialStatus.terminalPid
+$script:targetTabTitle = ''
+$script:targetWindow = [IntPtr]::Zero
+$script:lastEventId = ''
+$script:cardCollapsed = Test-Path -LiteralPath $collapsePath
 $script:pointerDown = $false
 $script:dragging = $false
 $script:dragStartX = 0; $script:dragStartY = 0
@@ -422,6 +459,47 @@ function Find-HostWindow([int]$StartPid) {
   return [IntPtr]::Zero
 }
 
+function Capture-TargetTab {
+  $targetPid = $script:targetPid
+  $window = Find-HostWindow $targetPid
+  if ($window -eq [IntPtr]::Zero) {
+    $agy = Get-Process -Name 'agy' -ErrorAction SilentlyContinue | Sort-Object StartTime -Descending | Select-Object -First 1
+    if ($agy) { $targetPid = $agy.Id; $script:targetPid = $targetPid; $window = Find-HostWindow $targetPid }
+  }
+  if ($window -eq [IntPtr]::Zero) { return }
+  $ownerPid = [SaturnNative]::WindowPid($window)
+  $owner = Get-Process -Id $ownerPid -ErrorAction SilentlyContinue
+  if ($owner -and $owner.ProcessName -eq 'WindowsTerminal') {
+    $title = [SaturnNative]::WindowTitle($window)
+    if ($title) {
+      $script:targetWindow = $window
+      $script:targetTerminalPid = $ownerPid
+      $script:targetTabTitle = $title
+      Write-Log ('tab-capture targetPid={0} terminalPid={1} tabTitleCaptured=1' -f $targetPid, $ownerPid)
+    }
+  }
+}
+
+function Select-TerminalTab([IntPtr]$Window, [string]$Title) {
+  if ($Window -eq [IntPtr]::Zero -or -not $Title) { return $false }
+  try {
+    $rootElement = [System.Windows.Automation.AutomationElement]::FromHandle($Window)
+    if (-not $rootElement) { return $false }
+    $condition = New-Object System.Windows.Automation.PropertyCondition(
+      [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+      [System.Windows.Automation.ControlType]::TabItem
+    )
+    $items = $rootElement.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
+    $matches = @()
+    foreach ($item in $items) { if ($item.Current.Name -eq $Title) { $matches += $item } }
+    if ($matches.Count -ne 1) { return $false }
+    $pattern = $null
+    if (-not $matches[0].TryGetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern, [ref]$pattern)) { return $false }
+    $pattern.Select()
+    return $true
+  } catch { return $false }
+}
+
 function Focus-Antigravity {
   $targetPid = $script:targetPid
   $window = Find-HostWindow $targetPid
@@ -430,13 +508,17 @@ function Focus-Antigravity {
     if ($agy) { $targetPid = $agy.Id; $window = Find-HostWindow $targetPid }
   }
   if ($window -eq [IntPtr]::Zero) { $window = [SaturnNative]::FindAntigravityWindow() }
+  $tabSelected = $false
+  if ($window -ne [IntPtr]::Zero -and $script:targetTabTitle) { $tabSelected = Select-TerminalTab $window $script:targetTabTitle }
   $ok = [SaturnNative]::Activate($window)
   if (-not $ok) { $script:shakeTicks = 8 }
-  Write-Log ('focus targetPid={0} hwnd={1} ok={2}' -f $targetPid, $window.ToInt64(), [int]$ok)
+  Write-Log ('focus targetPid={0} hwnd={1} tabSelected={2} ok={3}' -f $targetPid, $window.ToInt64(), [int]$tabSelected, [int]$ok)
 }
 
 $focusHandler = { Focus-Antigravity }
 $card.add_Click($focusHandler); $cardTitle.add_Click($focusHandler); $cardDot.add_Click($focusHandler); $cardState.add_Click($focusHandler)
+$cardClose.add_Click({ Toggle-Card })
+$form.add_DoubleClick({ Toggle-Card }); $card.add_DoubleClick({ Toggle-Card }); $cardTitle.add_DoubleClick({ Toggle-Card }); $cardState.add_DoubleClick({ Toggle-Card })
 
 $form.add_MouseDown({ param($sender, $event)
   if ($event.Button -eq [System.Windows.Forms.MouseButtons]::Left) {
@@ -495,6 +577,11 @@ $timer.add_Tick({
     $status = Get-LatestStatus
     $newState = $status.state
     if ([int]$status.hostPid -gt 0) { $script:targetPid = [int]$status.hostPid }
+    if ([int]$status.terminalPid -gt 0) { $script:targetTerminalPid = [int]$status.terminalPid }
+    if ($status.eventId -and $status.eventId -ne $script:lastEventId) {
+      $script:lastEventId = $status.eventId
+      Capture-TargetTab
+    }
     if ($newState -ne $script:state) {
       Write-Log ("state=$newState")
       $script:state = $newState

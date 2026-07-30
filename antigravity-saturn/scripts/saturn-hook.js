@@ -1,6 +1,7 @@
 'use strict';
 
 const crypto = require('node:crypto');
+const childProcess = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -56,7 +57,38 @@ function conversationKey(value) {
   return crypto.createHash('sha256').update(raw).digest('hex').slice(0, 20);
 }
 
-function normalizeEvent(eventName, payload, now = Date.now()) {
+function discoverHostProcess(parentPid = process.ppid) {
+  const safeParentPid = Number.isInteger(parentPid) && parentPid > 0 ? parentPid : process.ppid;
+  const fallback = { hookParentPid: safeParentPid, hostPid: safeParentPid, terminalPid: 0 };
+  const script = [
+    "$all=@{}",
+    "Get-CimInstance -Query 'SELECT ProcessId,ParentProcessId,Name,CreationDate FROM Win32_Process' -ErrorAction SilentlyContinue | ForEach-Object { $all[[int]$_.ProcessId]=$_ }",
+    `$cur=${safeParentPid}`,
+    "$agy=0",
+    "$terminal=0",
+    "for($i=0;$i -lt 12 -and $cur -gt 0;$i++){ if(-not $all.ContainsKey($cur)){break}; $p=$all[$cur]; if($p.Name -ieq 'agy.exe'){$agy=$cur}; if($p.Name -ieq 'WindowsTerminal.exe'){$terminal=$cur}; $cur=[int]$p.ParentProcessId }",
+    "Write-Output ($agy.ToString() + ',' + $terminal.ToString())",
+  ].join('; ');
+  try {
+    const result = childProcess.spawnSync('powershell.exe', [
+      '-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script,
+    ], { encoding: 'utf8', timeout: 2000, windowsHide: true });
+    if (result.status !== 0) return fallback;
+    const match = String(result.stdout || '').trim().match(/(\d+),(\d+)\s*$/);
+    if (!match) return fallback;
+    const agyPid = Number(match[1]);
+    const terminalPid = Number(match[2]);
+    return {
+      hookParentPid: safeParentPid,
+      hostPid: agyPid > 0 ? agyPid : safeParentPid,
+      terminalPid: terminalPid > 0 ? terminalPid : 0,
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+function normalizeEvent(eventName, payload, now = Date.now(), host = discoverHostProcess()) {
   const mapped = mapState(eventName, payload);
   const record = {
     version: 1,
@@ -65,7 +97,9 @@ function normalizeEvent(eventName, payload, now = Date.now()) {
     state: mapped.state,
     reason: mapped.reason,
     conversationKey: conversationKey(payload.conversationId),
-    hookParentPid: process.ppid,
+    hookParentPid: host.hookParentPid,
+    hostPid: host.hostPid,
+    terminalPid: host.terminalPid,
     timestampMs: now,
   };
 
@@ -122,7 +156,7 @@ function parseInput(text) {
 function handle(eventName, payload, options = {}) {
   const response = responseFor(eventName);
   if (!KNOWN_EVENTS.has(eventName)) return response;
-  const record = normalizeEvent(eventName, payload, options.now);
+  const record = normalizeEvent(eventName, payload, options.now, options.host);
   writeEvent(record, options.dataRoot);
   return response;
 }
@@ -145,6 +179,7 @@ if (require.main === module) main();
 
 module.exports = {
   conversationKey,
+  discoverHostProcess,
   getDataRoot,
   handle,
   mapState,

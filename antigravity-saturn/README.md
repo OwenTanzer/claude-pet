@@ -7,8 +7,9 @@ A lightweight Windows desktop Saturn driven by Google Antigravity 2.0 hooks and 
 - Antigravity hooks write privacy-safe state events to `~/.gemini/antigravity-saturn/events/`.
 - The resident sidecar renders Saturn as a 148 px topmost, non-activating window.
 - Active states show one compact privacy-safe card: `Antigravity CLI · Working/Done/Needs attention`.
-- A stationary left click walks the latest hook process ancestry (`agy` → shell → terminal), then restores and focuses that exact host window. A titled Antigravity desktop window remains the fallback.
+- A stationary left click walks the latest hook process ancestry (`agy` → shell → terminal), selects the uniquely matching Windows Terminal tab captured during the latest Antigravity event, then restores and focuses that host window. It never cycles tabs blindly; ambiguous titles degrade to window-level focus. A titled Antigravity desktop window remains the final fallback.
 - A deliberate drag moves Saturn and remembers its independent position.
+- Double-click Saturn, double-click the card, click the card's `x`, or use **Show status card** in the right-click menu to collapse/restore cards. The choice is remembered.
 - A failed focus attempt gives honest shake feedback instead of activating an unrelated window.
 - The resident uses its own mutex, PID file, position file, data root, and event namespace, so it does not share Claude Moon state.
 
@@ -41,7 +42,7 @@ There is no documented universal “waiting for user” event. Saturn does not s
 
 ## Privacy and storage
 
-The adapter deliberately does not persist prompts, tool arguments, transcript paths, artifact paths, workspace paths, or raw conversation IDs. It stores only the hook name, normalized state/reason, selected numeric counters, workspace count, the local hook parent PID used for terminal focusing, timestamps, and a short SHA-256 conversation key. State writes are atomic unique-file renames. The event directory is capped opportunistically at 500 files and pruned back to 400.
+The adapter deliberately does not persist prompts, tool arguments, transcript paths, artifact paths, workspace paths, raw conversation IDs, or tab titles. It stores only the hook name, normalized state/reason, selected numeric counters, workspace count, local process IDs used for terminal focusing, timestamps, and a short SHA-256 conversation key. The tab title is sampled into resident memory only when an event arrives. State writes are atomic unique-file renames. The event directory is capped opportunistically at 500 files and pruned back to 400.
 
 ## Uninstall
 
