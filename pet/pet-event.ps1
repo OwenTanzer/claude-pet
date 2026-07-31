@@ -1,8 +1,8 @@
 # Hook -> pet per-session state bridge (run under pwsh, UTF-8 safe).
-# Each Claude Code session (session_id) gets its own file under sessions\<id>, 10 TAB fields:
-#   key<TAB>label<TAB>title<TAB>detail<TAB>epochMillis<TAB>model<TAB>claudePid<TAB>field8<TAB>transcriptPath<TAB>cwd
-# field8 is an unused empty placeholder (WT tab-level jump was removed; kept so field9
-# transcript / field10 cwd keep their indices). The resident renders one card per live session.
+# Each Claude Code session (session_id) gets its own file under sessions\<id>, 12 TAB fields:
+#   key<TAB>label<TAB>title<TAB>detail<TAB>epochMillis<TAB>model<TAB>claudePid<TAB>field8<TAB>transcriptPath<TAB>cwd<TAB>detailAuthor<TAB>terminalKey
+# field8 remains an unused empty placeholder so the established transcript/cwd indices never
+# move. terminalKey is a short one-way key derived from WT_SESSION, never the raw identifier.
 # Event: prompt | attention | permreq | busy | done | idle | end | answered
 param([string]$Event = 'done')
 $ErrorActionPreference = 'SilentlyContinue'
@@ -39,6 +39,49 @@ function ExistingPid { $c = RU $file; if ($c) { $p = $c -split "`t"; if ($p.Coun
 function ExistingTp  { $c = RU $file; if ($c) { $p = $c -split "`t"; if ($p.Count -ge 9) { return $p[8] } } return '' }
 function ExistingCwd { $c = RU $file; if ($c) { $p = $c -split "`t"; if ($p.Count -ge 10) { return $p[9] } } return '' }
 function ExistingAuthor { $c = RU $file; if ($c) { $p = $c -split "`t"; if ($p.Count -ge 11) { return $p[10] } } return '' }   # field 11: who wrote $detail
+# Windows Terminal gives every terminal session a WT_SESSION value. Hash it before storing it,
+# then put only the short key in the tab title and session record. The resident can use that
+# exact marker to distinguish several Claude tabs owned by the same WindowsTerminal.exe.
+function Get-TerminalKey {
+  if (-not $env:WT_SESSION) { return '' }
+  try {
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { $hash = $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes([string]$env:WT_SESSION)) } finally { $sha.Dispose() }
+    return ([BitConverter]::ToString($hash).Replace('-', '').Substring(0, 10).ToLowerInvariant())
+  } catch { return '' }
+}
+function Set-TerminalMarker($key) {
+  if (-not $key) { return }
+  $marker = "Moon - Claude Code [$key]"
+  try { $Host.UI.RawUI.WindowTitle = $marker } catch {}
+  try { [Console]::Title = $marker } catch {}
+  try { & cmd.exe /d /c "title $marker" | Out-Null } catch {}
+}
+$terminalKey = Get-TerminalKey
+Set-TerminalMarker $terminalKey
+
+# Claude changes its application title as soon as control returns, so the marker is only
+# a short capture window. On the first event seen by each resident process, keep this hook
+# alive until the resident confirms it cached the exact UI Automation TabItem. Later events
+# see the matching ack and return immediately. The bounded wait never blocks when Moon is off.
+function Wait-TerminalCapture($key) {
+  if (-not $key) { return }
+  $petPid = 0
+  $pf = Join-Path $dir 'pet.pid'
+  try { [void][int]::TryParse(((RU $pf).Trim()), [ref]$petPid) } catch {}
+  if ($petPid -le 0 -or -not (Get-Process -Id $petPid -ErrorAction SilentlyContinue)) { return }
+  $ackPath = "$file.taback"
+  $deadline = [DateTime]::UtcNow.AddMilliseconds(1200)
+  do {
+    # Claude/Windows Terminal can restore the dynamic application title while this
+    # hook is still running. Reassert the marker for the whole bounded handshake so
+    # the resident's polling loop gets a real chance to observe and cache the tab.
+    Set-TerminalMarker $key
+    $ack = (RU $ackPath) -split "`t"
+    if ($ack.Count -ge 2 -and $ack[0] -eq "$petPid" -and $ack[1] -ceq $key) { return }
+    Start-Sleep -Milliseconds 40
+  } while ([DateTime]::UtcNow -lt $deadline)
+}
 
 # scrub every control char (incl. TAB/CR/LF/ESC/BEL) so a value can never corrupt the
 # single-line TAB-separated record; cap length so a pathological title can't bloat it
@@ -121,9 +164,8 @@ function WriteSession($key, $label, $title, $detail, $model, $detailAuthor) {
   # 'claude', a fresh prompt sets 'user'). Only 'prompt' and 'done'(with a reply) set it explicitly.
   if ($null -eq $detailAuthor) { $detailAuthor = ExistingAuthor }
   $cp = "$cpid"; if ($cpid -le 0) { $cp = ExistingPid }   # one flaky capture must not wipe a good pid
-  # field 8 = unused placeholder (WT tab-level jump was removed; WT jumps are window-level
-  # only, VS Code stays tab-level via the companion handshake). Kept empty so field 9
-  # (transcript) and field 10 (cwd) keep their indices -- do NOT renumber.
+  # field 8 = unused placeholder. Kept empty so field 9 (transcript) and field 10 (cwd)
+  # retain their established indices -- do NOT renumber.
   $fp = ''
   # field 9 = transcript path (the resident tails it to catch Esc-interrupts, which fire
   # no Stop hook); events without a transcript_path keep the old value
@@ -131,9 +173,19 @@ function WriteSession($key, $label, $title, $detail, $model, $detailAuthor) {
   # field 10 = this session's cwd (workspace hint: disambiguates which VS Code window to
   # jump to, since all windows share one Code.exe and MainWindowHandle can't tell them apart)
   $cwdF = CleanRec $cwd; if (-not $cwdF) { $cwdF = ExistingCwd }
+  # field 12 = short per-terminal key used for exact Windows Terminal tab selection.
+  # Do not carry an old value when this hook is not running under Windows Terminal.
+  $terminalKeyF = CleanRec $terminalKey
   $epoch = [long]([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())
-  $rec = ($key, $label, $title, $detail, "$epoch", $model, $cp, $fp, $tpF, $cwdF, $detailAuthor) -join "`t"
+  $rec = ($key, $label, $title, $detail, "$epoch", $model, $cp, $fp, $tpF, $cwdF, $detailAuthor, $terminalKeyF) -join "`t"
+  # A prompt hook is synchronous and user-driven: while it runs, this session's
+  # terminal tab is the foreground selection. Offer that one-shot epoch as proof
+  # for the resident's exact foreground capture fallback.
+  if ($Event -eq 'prompt' -and $terminalKeyF) {
+    [IO.File]::WriteAllText("$file.fgcap", "$epoch", [Text.Encoding]::ASCII)
+  }
   [IO.File]::WriteAllText($file, $rec, (New-Object Text.UTF8Encoding($false)))
+  Wait-TerminalCapture $terminalKeyF
 }
 $projOr = $proj   # may be empty; the resident localizes an empty title to "new session"
 function TitleOr { $t = ExistingTitle; if ($t) { return $t } else { return $projOr } }
@@ -247,10 +299,10 @@ switch ($Event) {
     # the resident's 7-day storage TTL does the eventual purge of truly dead sessions
     $c = RU $file
     if ($c) {
-      $p = $c -split "`t"; while ($p.Count -lt 10) { $p += '' }
+      $p = $c -split "`t"; while ($p.Count -lt 12) { $p += '' }
       $p[0] = 'idle'
       $p[4] = "$([long]([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()) - 1860000)"
-      if ($p[7]) { $p[7] = '' }   # field 8 unused: clear any stale fingerprint (keep field9/field10)
+      if ($p[7]) { $p[7] = '' }   # field 8 unused: clear any stale fingerprint (keep later fields)
       [IO.File]::WriteAllText($file, ($p -join "`t"), (New-Object Text.UTF8Encoding($false)))
     }
     Remove-Item "$file.dismiss" -Force -ErrorAction SilentlyContinue

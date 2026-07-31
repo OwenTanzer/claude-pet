@@ -60,19 +60,17 @@
   (去空白/引号/反斜杠/反引号)在 pet-event.ps1 与 pet-resident.ps1 **两处必须一致**。拆防:除
   permreq/attention 外的一切事件、`/clear`、7 天清理、以及翻卡本身都会删 `.pending`,杜绝陈旧
   片段日后误匹配。README 已知限制三语口径=命令类 1-2s 恢复,非命令类等跑完。
-- **点卡跳窗(click-to-jump,1.2.0)**:会话记录第 7 字段 = claudePid(pet-event 每事件写入,捕获失败保留旧值不清空;
-  SessionStart 对 resume/compact/老记录**只刷新该字段**,标题/状态/epoch 不动——坑 8 不回归)。单击卡片行的
-  标题/状态文本 → 常驻从该 PID 沿父进程链上爬(≤8 层;祖先出生时间不得晚于子进程 +2s,防父 PID 被系统回收后
-  指向陌生进程),命中第一个持真实顶层窗口的祖先(WT / VS Code / 独立控制台同一算法通吃)→ 最小化先还原 +
-  `SetForegroundWindow`(点击宠物的瞬间本进程持前台授予,调用合法;失败兜底 AttachThreadInput 握手)。跳不了
-  (PID 已死 / 被非 claude 进程复用 / 爬不到窗口 / 老 6 字段记录)→ 卡片横向摇头,**不跳不猜**;手型光标=可跳、
-  默认光标=不可跳,affordance 不说谎。宠物自身只到窗口级;VS Code 内 tab 级由伴生扩展补全(见下条)。
-  **WT 的 tab 级已调查后放弃、相关代码已删(2026-07-08)**:结构上不可行——WT 对外一律只见
-  WindowsTerminal.exe、死不漏宿主 shell 的 PID(UIA 全树 ProcessId 全是 WT;AttachConsole+
-  GetConsoleProcessList 不暴露 OpenConsole;`wt focus-tab` 只能按索引、无 pid→tab 映射),实测
-  S-PID-INDEX 挂。故 WT 仅窗口级;要 tab 精度用 VS Code 或手动给 tab 改不同名。详见 4 份 Codex
-  收敛稿 `docs/wt-tab-jump-{diagnosis-design,pid-investigation,solution-space}.md` + 删刀计划
-  `docs/audits/2026-07-08-删WT-tab跳转.md`。(field 8 曾是 tab 指纹,现为空占位、不重编号。)
+- **点卡跳窗(click-to-jump,1.2.0;WT 精确标签 1.6.0)**:会话记录第 7 字段 = claudePid,第 12 字段 =
+  `WT_SESSION` 经 SHA-256 得到的 10 位短键(不持久化原值);field 8 仍为空占位,既有 transcript/cwd 索引不变。
+  每个钩子在所属控制台短暂写入 `Moon - Claude Code [短键]` 标题,写完会话记录后最多等待 1.2s。常驻在 120ms
+  文件轮询中沿 claudePid 父进程链验证宿主,用 UI Automation 扫描 WindowsTerminal.exe 的全部顶层窗口与 TabItem;
+  仅在标题标记**恰好匹配一个**时缓存该 AutomationElement 并写 `<session>.taback`(`residentPid + 短键`)。钩子收到
+  当前 resident 的 ack 即刻返回,随后 Claude 可继续覆盖其动态标题;点击时直接选择仍存活的缓存元素并激活所属窗口。
+  WindowsTerminal 的共享 MainWindowHandle 永远不会被直接采用。缓存失效、缺失或重复匹配一律摇头,
+  **不跳不猜**,所以不会误入 Saturn、Codex 或另一个 Claude 会话。非 WT 宿主继续走原窗口激活路径;VS Code 内
+  tab 级仍由伴生扩展补全(见下条)。旧版基于 PID/索引反推 WT tab 的失败调查仍保存在
+  `docs/wt-tab-jump-{diagnosis-design,pid-investigation,solution-space}.md` 与
+  `docs/audits/2026-07-08-删WT-tab跳转.md`;新版改由会话主动标记,不再需要不可得的 pid→tab 映射。
 - **VS Code tab 级跳转 = 伴生扩展握手(1.3.0)**:纯外部无法聚焦 VS Code 内部终端面板(Electron 无障碍树
   不可靠、CLI 无命令口子),业界正解=自装扩展从内部干。常驻在**窗口级跳转成功后**把该会话的祖先 PID 链
   (Find-HostWindow 爬链的副产品,存 `$script:jumpChain`,预热时已填好 → 缓存命中的点击也拿得到)写入

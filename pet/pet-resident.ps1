@@ -9,6 +9,7 @@
 $ErrorActionPreference = 'SilentlyContinue'
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
+Add-Type -AssemblyName UIAutomationClient
 
 $cs = @"
 using System;
@@ -89,6 +90,8 @@ public static class Lp {
     [DllImport("user32.dll")] static extern bool IsIconic(IntPtr h);
     [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+    public static IntPtr ForegroundWindow(){ try { return GetForegroundWindow(); } catch { return IntPtr.Zero; } }
+    public static int WindowProcessId(IntPtr h){ try { uint p; GetWindowThreadProcessId(h, out p); return (int)p; } catch { return 0; } }
     [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
     [DllImport("user32.dll")] static extern bool AttachThreadInput(uint a, uint b, bool attach);
     [DllImport("user32.dll")] static extern bool IsWindow(IntPtr h);
@@ -700,13 +703,17 @@ function BgEvidenceEq($a, $b) {
   return $true
 }
 # Walk up the parent chain from a claude.exe PID to the first ancestor owning a real
-# top-level window (Windows Terminal, VS Code, a plain console, ...). Each ancestor must
+# top-level window (VS Code, a plain console, ...). Windows Terminal is deliberately not
+# returned as a generic HWND: all of its tabs/windows share one process, so its PID is
+# recorded separately and resolved by the per-session marker before any activation.
+# Each ancestor must
 # be born no later than its child (2s slack): a recycled parent PID would otherwise point
 # at an unrelated newer process and we would activate a stranger's window. No window
 # found -> IntPtr.Zero, caller shows the honest head-shake instead of guessing.
 # Perf: ONE bulk CIM query (the per-PID Filter form costs 100-300ms per hop), then the
 # walk happens in memory; callers cache the resolved HWND so repeat jumps are instant.
 function Find-HostWindow([int]$startPid) {
+  $script:jumpTerminalPid[$startPid] = 0
   $all = @{}
   foreach ($pr in @(Get-CimInstance -Query 'SELECT ProcessId,ParentProcessId,CreationDate FROM Win32_Process' -ErrorAction SilentlyContinue)) { $all[[int]$pr.ProcessId] = $pr }
   # side product: the visited ancestor PIDs (claude, its shell, ...) are stashed in
@@ -721,12 +728,123 @@ function Find-HostWindow([int]$startPid) {
     if ($prevBorn -and $born -and $born -gt $prevBorn.AddSeconds(2)) { break }
     [void]$chain.Add($cur)
     $gp = Get-Process -Id $cur -ErrorAction SilentlyContinue
+    if ($gp -and $gp.ProcessName -eq 'WindowsTerminal') {
+      $script:jumpTerminalPid[$startPid] = [int]$gp.Id
+      $script:jumpChain[$startPid] = $chain.ToArray()
+      return [IntPtr]::Zero
+    }
     if ($gp -and $gp.MainWindowHandle.ToInt64() -ne 0) { $script:jumpChain[$startPid] = $chain.ToArray(); return $gp.MainWindowHandle }
     if ($born) { $prevBorn = $born }
     $cur = 0; if ($ci.ParentProcessId) { $cur = [int]$ci.ParentProcessId }
   }
   $script:jumpChain[$startPid] = $chain.ToArray()
   return [IntPtr]::Zero
+}
+# Resolve an exact Moon-owned Windows Terminal tab by its hashed WT_SESSION marker.
+# Search every top-level window owned by that Terminal process, and accept exactly one
+# match. Missing or duplicate markers fail closed so Moon never guesses another tab.
+function Find-MoonTerminalTarget([int]$terminalPid, [string]$terminalKey) {
+  if ($terminalPid -le 0 -or $terminalKey -notmatch '^[0-9a-f]{10}$') { return $null }
+  $marker = "Moon - Claude Code [$terminalKey]"
+  try {
+    $rootEl = [System.Windows.Automation.AutomationElement]::RootElement
+    $pc = New-Object System.Windows.Automation.PropertyCondition(
+      [System.Windows.Automation.AutomationElement]::ProcessIdProperty, $terminalPid)
+    $wins = $rootEl.FindAll([System.Windows.Automation.TreeScope]::Children, $pc)
+    $tc = New-Object System.Windows.Automation.PropertyCondition(
+      [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+      [System.Windows.Automation.ControlType]::TabItem)
+    $matches = @()
+    foreach ($win in $wins) {
+      foreach ($tab in $win.FindAll([System.Windows.Automation.TreeScope]::Descendants, $tc)) {
+        if ([string]$tab.Current.Name -ceq $marker) {
+          $matches += @{ Window = [IntPtr]$win.Current.NativeWindowHandle; Tab = $tab }
+        }
+      }
+    }
+    if ($matches.Count -eq 1 -and $matches[0].Window -ne [IntPtr]::Zero) { return $matches[0] }
+  } catch {}
+  return $null
+}
+function Find-ForegroundMoonTerminalTarget([int]$terminalPid) {
+  if ($terminalPid -le 0) { return $null }
+  try {
+    $fg = [Lp]::ForegroundWindow()
+    if ($fg -eq [IntPtr]::Zero -or [Lp]::WindowProcessId($fg) -ne $terminalPid) { return $null }
+    $win = [System.Windows.Automation.AutomationElement]::FromHandle($fg)
+    if (-not $win) { return $null }
+    $tc = New-Object System.Windows.Automation.PropertyCondition(
+      [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+      [System.Windows.Automation.ControlType]::TabItem)
+    $selected = @()
+    foreach ($tab in $win.FindAll([System.Windows.Automation.TreeScope]::Descendants, $tc)) {
+      try {
+        $pat = $tab.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern)
+        if ($pat -and $pat.Current.IsSelected) { $selected += $tab }
+      } catch {}
+    }
+    if ($selected.Count -eq 1) { return @{ Window = $fg; Tab = $selected[0] } }
+  } catch {}
+  return $null
+}
+function Select-MoonTerminalTarget([string]$sid, [int]$terminalPid, [string]$terminalKey) {
+  if (-not $sid -or $terminalPid -le 0 -or $terminalKey -notmatch '^[0-9a-f]{10}$') { return [IntPtr]::Zero }
+  $target = $null
+  try {
+    if ($script:jumpTabCache.ContainsKey($sid)) {
+      $cached = $script:jumpTabCache[$sid]
+      if ($cached.TerminalPid -eq $terminalPid -and $cached.Key -ceq $terminalKey -and [Lp]::IsWin($cached.Window)) {
+        $target = $cached
+      } else { [void]$script:jumpTabCache.Remove($sid) }
+    }
+    if (-not $target) {
+      $found = Find-MoonTerminalTarget $terminalPid $terminalKey
+      if (-not $found) { return [IntPtr]::Zero }
+      $target = @{ TerminalPid = $terminalPid; Key = $terminalKey; Window = $found.Window; Tab = $found.Tab }
+      $script:jumpTabCache[$sid] = $target
+    }
+    $pat = $target.Tab.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern)
+    if (-not $pat) { [void]$script:jumpTabCache.Remove($sid); return [IntPtr]::Zero }
+    $pat.Select()
+    return [IntPtr]$target.Window
+  } catch {
+    [void]$script:jumpTabCache.Remove($sid)
+    return [IntPtr]::Zero
+  }
+}
+# Capture is deliberately separate from selection: while a Claude hook holds the short
+# marker on-screen, Update-Card caches the exact AutomationElement without changing focus.
+# The ack lets the hook return as soon as that durable in-memory binding exists.
+function Capture-MoonTerminalTarget([string]$sid, [int]$claudePid, [string]$terminalKey, [string]$recordPath, [bool]$allowForeground) {
+  if (-not $sid -or $claudePid -le 0 -or $terminalKey -notmatch '^[0-9a-f]{10}$') { return $false }
+  try {
+    if ($script:jumpTabCache.ContainsKey($sid)) {
+      $cached = $script:jumpTabCache[$sid]
+      if ($cached.Key -ceq $terminalKey -and [Lp]::IsWin($cached.Window)) {
+        [IO.File]::WriteAllText("$recordPath.taback", "$PID`t$terminalKey", [Text.Encoding]::ASCII)
+        return $true
+      }
+      [void]$script:jumpTabCache.Remove($sid)
+    }
+    $gp = Get-Process -Id $claudePid -ErrorAction SilentlyContinue
+    if (-not $gp -or $gp.ProcessName -ne 'claude') { return $false }
+    [void](Find-HostWindow $claudePid)
+    $terminalPid = 0
+    if ($script:jumpTerminalPid.ContainsKey($claudePid)) { $terminalPid = [int]$script:jumpTerminalPid[$claudePid] }
+    if ($terminalPid -le 0) { return $false }
+    $found = Find-MoonTerminalTarget $terminalPid $terminalKey
+    # UserPromptSubmit and SessionStart are synchronous, user-driven hooks: their
+    # owning terminal is necessarily the selected tab of the foreground Terminal
+    # window. Use that proof only when the hook wrote a matching one-shot epoch.
+    # Background/Stop/tool hooks never receive this fallback and still fail closed.
+    if (-not $found -and $allowForeground) { $found = Find-ForegroundMoonTerminalTarget $terminalPid }
+    if (-not $found) { return $false }
+    $script:jumpTabCache[$sid] = @{ TerminalPid = $terminalPid; Key = $terminalKey; Window = $found.Window; Tab = $found.Tab }
+    $ack = "$PID`t$terminalKey"
+    [IO.File]::WriteAllText("$recordPath.taback", $ack, [Text.Encoding]::ASCII)
+    LogEv ('tab captured sid={0} pid={1} wt={2} hwnd={3}' -f $sid, $claudePid, $terminalPid, $found.Window.ToInt64())
+    return $true
+  } catch { return $false }
 }
 # Companion-extension handshake (tab-level jump inside VS Code): after a successful
 # window-level activation, drop the session's ancestor PID chain into a UNIQUE
@@ -764,7 +882,14 @@ function Jump-Row($idx) {
   if ($script:editing) { return }
   $sid = $script:rowSids[$idx]; if (-not $sid) { return }
   $cp = 0; [void][int]::TryParse(($script:rowPids[$idx] + ''), [ref]$cp)
-  $ok = $false; $hv = 0; $hit = 0; $rq = 0
+  $jcwd = ''; $terminalKey = ''
+  $jsc = RU (Join-Path $sessDir $sid)
+  if ($jsc) {
+    $jsp = $jsc -split "`t"
+    if ($jsp.Count -ge 10) { $jcwd = $jsp[9] }
+    if ($jsp.Count -ge 12) { $terminalKey = $jsp[11] }
+  }
+  $ok = $false; $hv = 0; $hit = 0; $rq = 0; $terminalPid = 0
   if ($cp -gt 0) {
     $gp0 = Get-Process -Id $cp -ErrorAction SilentlyContinue
     if ($gp0 -and $gp0.ProcessName -eq 'claude') {   # PID recycled by a non-claude process -> never jump
@@ -774,16 +899,21 @@ function Jump-Row($idx) {
         if ($c -ne [IntPtr]::Zero -and [Lp]::IsWin($c)) { $h = $c; $hit = 1 }
       }
       if ($h -eq [IntPtr]::Zero) { $h = Find-HostWindow $cp; $script:jumpCache[$cp] = $h }   # Zero is cached too (stops futile re-warming); a later click re-walks
+      if ($script:jumpTerminalPid.ContainsKey($cp)) { $terminalPid = [int]$script:jumpTerminalPid[$cp] }
+      if ($terminalPid -gt 0) {
+        # Select the exact session tab first; only then activate its owning Terminal window.
+        # A missing/ambiguous marker returns Zero and produces the honest head-shake.
+        $h = Select-MoonTerminalTarget $sid $terminalPid $terminalKey
+      }
       if ($h -ne [IntPtr]::Zero) {
         # multi-window VS Code: all windows share one Code.exe so MainWindowHandle can't
         # tell them apart -> re-pick the window whose title matches this session's workspace
         # (field 10 = cwd). No-op for single-window / non-editor hosts. Applied per click
         # (not cached) so it always targets the right window as the window set changes.
-        $jcwd = ''; $jsc = RU (Join-Path $sessDir $sid); if ($jsc) { $jsp = $jsc -split "`t"; if ($jsp.Count -ge 10) { $jcwd = $jsp[9] } }
-        if ($jcwd) { $h = [Lp]::PickWindowForPath($jcwd, $h) }
+        if ($terminalPid -le 0 -and $jcwd) { $h = [Lp]::PickWindowForPath($jcwd, $h) }
         $hv = $h.ToInt64(); $ok = [Lp]::Activate($h)
         if (-not $ok) { $script:jumpCache[$cp] = [IntPtr]::Zero }   # stale target -> drop so the next click re-resolves
-        if ($ok) { $rq = Write-JumpRequest $cp }   # VS Code companion handshake rides on a successful window jump (WT is window-level only)
+        if ($ok -and $terminalPid -le 0) { $rq = Write-JumpRequest $cp }   # VS Code companion handshake rides on a successful non-WT jump
       }
     }
   }
@@ -1281,8 +1411,12 @@ $script:selRow = -2; $script:selectedSid = ''   # the last-clicked card stays li
 $script:lastKeys = @{}; $script:rowKeys = New-Object 'string[]' $MAXROWS; $script:rowSids = New-Object 'string[]' $MAXROWS; $script:firstPoll = $true
 $script:rowPids = New-Object 'string[]' $MAXROWS; $script:shakeN = 0
 $script:petJumpSid = ''; $script:petJumpPid = ''           # independent of visible/dismissed card rows
-$script:jumpCache = @{}; $script:lastWarm = $now0   # claudePid -> host HWND (pre-warmed so the first click is instant)
+$script:jumpCache = @{}; $script:lastWarm = $now0   # claudePid -> non-WT host HWND (pre-warmed so the first click is instant)
 $script:jumpChain = @{}   # claudePid -> ancestor PID chain from that walk (consumed by the VS Code companion handshake)
+$script:jumpTerminalPid = @{}   # claudePid -> shared WindowsTerminal.exe PID (never itself activated blindly)
+$script:jumpTabCache = @{}      # session id -> exact UI Automation tab + owning Terminal window
+$script:jumpCaptureEpoch = @{}  # session id -> latest record epoch offered for transient-marker capture
+$script:jumpCaptureUntil = @{}  # session id -> bounded retry deadline for that marker
 $script:lastIntr = $now0
 $script:lastBg = $now0                                   # background-running detection cadence
 $script:lastSpriteCheck = $now0                          # lunar asset reload cadence
@@ -1355,7 +1489,26 @@ function Update-Card {
     # (first-prompt title, rename lock, model badge) must survive so a revived session
     # keeps its identity; physical deletion only after 7 days of silence
     $idleMs = $now - $epoch
-    if ($idleMs -gt 604800000) { Remove-Item $f.FullName, "$($f.FullName).dismiss", "$($f.FullName).titlelock", "$($f.FullName).pending" -Force -ErrorAction SilentlyContinue; continue }
+    if ($idleMs -gt 604800000) { Remove-Item $f.FullName, "$($f.FullName).dismiss", "$($f.FullName).titlelock", "$($f.FullName).pending", "$($f.FullName).taback", "$($f.FullName).fgcap" -Force -ErrorAction SilentlyContinue; continue }
+    # The hook writes the record while its unique tab marker is still visible, then waits
+    # briefly for this capture. Retry only inside that event's bounded window; after it
+    # expires we stop scanning rather than burning CIM/UIA work on a vanished marker.
+    if ($p.Count -ge 12 -and $p[11] -match '^[0-9a-f]{10}$') {
+      $capEpoch = "$($p[4])"
+      if (-not $script:jumpCaptureEpoch.ContainsKey($f.Name) -or $script:jumpCaptureEpoch[$f.Name] -ne $capEpoch) {
+        $script:jumpCaptureEpoch[$f.Name] = $capEpoch
+        $script:jumpCaptureUntil[$f.Name] = $now + 1400
+      }
+      if ($now -le [long]$script:jumpCaptureUntil[$f.Name]) {
+        $capPid = 0; [void][int]::TryParse(($p[6] + ''), [ref]$capPid)
+        $fgEpoch = ((RU "$($f.FullName).fgcap") + '').Trim()
+        $allowForeground = ($fgEpoch -and $fgEpoch -eq $capEpoch)
+        if (Capture-MoonTerminalTarget $f.Name $capPid $p[11] $f.FullName $allowForeground) {
+          $script:jumpCaptureUntil[$f.Name] = 0
+          Remove-Item "$($f.FullName).fgcap" -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
     $jumpList += [pscustomobject]@{ sid=$f.Name; key=$p[0]; epoch=$epoch; cpid=$(if($p.Count -ge 7){$p[6]}else{''}) }
     if ($idleMs -gt 1800000) { continue }
     $dp = "$($f.FullName).dismiss"
