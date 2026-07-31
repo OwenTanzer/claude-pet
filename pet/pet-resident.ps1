@@ -234,6 +234,8 @@ if (-not $acquired) { return }
 
 $code = $PSScriptRoot
 $root = Join-Path $env:USERPROFILE '.claude\pet-data'
+$petCenterProtocol = Join-Path $code 'pet-center-protocol.ps1'
+if (Test-Path -LiteralPath $petCenterProtocol) { . $petCenterProtocol }
 if (-not (Test-Path $root)) { New-Item -ItemType Directory -Force -Path $root | Out-Null }
 # bundled assets live in the (read-only) plugin dir; mirror them into the writable data
 # dir, refreshing when the shipped copy is newer (so plugin updates actually take effect)
@@ -1433,6 +1435,7 @@ $script:privEpoch = 0                                   # bumps on every privacy
 $script:TIP_DWELL = 400                                 # ms hover before the tooltip shows
 $script:fsDirty = $false
 $script:editing = $false; $script:editSid = ''
+$script:centerVisible = $true
 $spinChars = @(0x280B,0x2819,0x2839,0x2838,0x283C,0x2834,0x2826,0x2827,0x2807,0x280F) | ForEach-Object { [char]$_ }
 $checkChar = [char]0x2713
 $staticSpin = [char]0x2026
@@ -1442,6 +1445,27 @@ function Render($key) {
   if ($key -ne $script:curFrame -or $tx -ne $script:dispX -or $ty -ne $script:dispY) {
     [Lp]::SetBitmap($form.Handle, $script:frames[$key], $tx, $ty); $script:curFrame = $key; $script:dispX = $tx; $script:dispY = $ty
   }
+}
+function Get-MoonCenterState {
+  if (@($script:rowKeys | Where-Object { $_ -eq 'attention' }).Count -gt 0) { return 'attention' }
+  if (@($script:rowKeys | Where-Object { $_ -eq 'thinking' }).Count -gt 0 -or @($script:rowBg | Where-Object { $_ }).Count -gt 0) { return 'working' }
+  if (@($script:rowKeys | Where-Object { $_ -eq 'done' }).Count -gt 0) { return 'done' }
+  return 'idle'
+}
+function Set-MoonCenterVisibility([bool]$Visible) {
+  if ($script:centerVisible -eq $Visible) { return }
+  $script:centerVisible = $Visible
+  if ($Visible) {
+    if (-not $form.Visible) { $form.Show() }
+    $script:fsDirty = $true
+    $script:curFrame = ''
+  } else {
+    Hide-Tip
+    if ($script:cardShown -or $card.Visible) { $card.Hide(); $script:cardShown = $false }
+    if ($script:editWin -and $script:editWin.Visible) { $script:editWin.Hide(); $script:editing = $false }
+    if ($form.Visible) { $form.Hide() }
+  }
+  LogEv ('pet-center visible={0}' -f [int]$Visible)
 }
 function Reload-SpriteFramesIfChanged {
   if (-not (Test-Path $script:lunarMetaPath)) { return }
@@ -1546,7 +1570,7 @@ function Update-Card {
   }
   $script:firstPoll = $false
 
-  if ((Test-Path $collapsePath) -or $list.Count -eq 0) {
+  if (-not $script:centerVisible -or (Test-Path $collapsePath) -or $list.Count -eq 0) {
     if ($script:cardShown) { $card.Hide(); $script:cardShown = $false }
     # Hidden cards still need live row targets: clicking the pet must jump even
     # while collapsed, and interrupt/background watches should not go stale.
@@ -1625,7 +1649,7 @@ function Update-Card {
     $script:lastSig = $sig
   }
   Place-Card
-  if (-not $script:cardShown) { $card.Show(); $script:cardShown = $true }
+  if ($script:centerVisible -and -not $script:cardShown) { $card.Show(); $script:cardShown = $true }
 }
 
 $form.add_MouseDown({ param($s,$e)
@@ -1666,8 +1690,18 @@ $fsw.EnableRaisingEvents = $true
 
 $tick = New-Object System.Windows.Forms.Timer
 $tick.Interval = 60
+$script:lastPetCenterPoll = [DateTime]::MinValue
+$script:lastPetCenterPublish = [DateTime]::MinValue
 $tick.add_Tick({
   $now = Get-Date
+  if (($now - $script:lastPetCenterPoll).TotalMilliseconds -ge 250) {
+    $script:lastPetCenterPoll = $now
+    if (Get-Command Invoke-PetCenterCommand -ErrorAction SilentlyContinue) { [void](Invoke-PetCenterCommand) }
+  }
+  if (($now - $script:lastPetCenterPublish).TotalMilliseconds -ge 2000) {
+    $script:lastPetCenterPublish = $now
+    if (Get-Command Publish-PetCenterStatus -ErrorAction SilentlyContinue) { Publish-PetCenterStatus }
+  }
   if (($now - $script:lastSpriteCheck).TotalMilliseconds -ge 2000) {
     $script:lastSpriteCheck = $now
     Reload-SpriteFramesIfChanged
@@ -1698,7 +1732,7 @@ $tick.add_Tick({
   # but don't fight a fullscreen game / presentation / Do-Not-Disturb, and NEVER re-assert
   # while transient UI (rename box, context menu) is open -- slamming the card to the top of
   # the topmost band would cover the menu (same class of bug as the editing guard)
-  if (-not $script:editing -and -not $menu.Visible -and ($now - $script:lastTop).TotalSeconds -ge 2) {
+  if ($script:centerVisible -and -not $script:editing -and -not $menu.Visible -and ($now - $script:lastTop).TotalSeconds -ge 2) {
     $script:lastTop = $now
     if ([Lp]::CanNotify()) { [Lp]::Top($form.Handle); if ($card.Visible) { [Lp]::Top($card.Handle) }; if ($script:tipWin -and $script:tipWin.Visible) { [Lp]::Top($script:tipWin.Handle) } }   # tooltip asserted AFTER the card so it wins z-order over it
   }
@@ -1902,8 +1936,14 @@ $tick.add_Tick({
   }
 })
 
-$form.add_Shown({ LogEv 'resident up'; Render 'idle'; Update-Card; $tick.Start() })
+$form.add_Shown({
+  if (Get-Command Start-PetCenterAdapter -ErrorAction SilentlyContinue) {
+    Start-PetCenterAdapter -PetId 'claude-moon' -DisplayName 'Moon' -Provider 'Claude Code' -DataRoot $root -PositionFile $posPath -MutexName 'ClaudePetResident' -GetVisible { $script:centerVisible } -SetVisible { param($visible) Set-MoonCenterVisibility ([bool]$visible) } -GetState { Get-MoonCenterState }
+  }
+  LogEv 'resident up'; Render 'idle'; Update-Card; $tick.Start()
+})
 [System.Windows.Forms.Application]::Run($form)
+if (Get-Command Stop-PetCenterAdapter -ErrorAction SilentlyContinue) { Stop-PetCenterAdapter }
 foreach ($f in $script:frames.Values) { $f.Dispose() }
 try { $fsw.EnableRaisingEvents = $false; $fsw.Dispose() } catch {}
 try { if ($script:tipWin) { $script:tipWin.Dispose() } } catch {}
