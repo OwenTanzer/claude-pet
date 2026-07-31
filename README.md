@@ -240,3 +240,4 @@ Claude Code で**順に**実行(`install` では user scope を選択):
 - **どのターミナルでも動く?** はい:VS Code ターミナル、Windows Terminal、PowerShell ウィンドウ。
 
 この小さなペットが役に立ったら、⭐ をつけてもらえると他の人にも見つけやすくなります 🌸
+> Experimental integration: when the optional Klezmoball pet center is present, Moon publishes a content-free local heartbeat and accepts only expiring `show` / `hide` requests. Hidden Moon keeps its resident, session tracking, terminal focus behavior, and remembered position running. Lifecycle commands are not exposed. Verify the adapter with `powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools\guard-pet-center-protocol.ps1`.
