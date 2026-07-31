@@ -81,6 +81,9 @@ function Wait-TerminalCapture($key) {
   if ($petPid -le 0 -or -not (Get-Process -Id $petPid -ErrorAction SilentlyContinue)) { return }
   $deadline = [DateTime]::UtcNow.AddMilliseconds(1600)
   do {
+    # Shell integration may replace the application title before the resident's
+    # next poll. Keep the exact marker visible throughout this bounded handshake.
+    Set-TerminalMarker $key
     $ack = (Read-Utf8 "$file.taback") -split "`t"
     if ($ack.Count -ge 2 -and $ack[0] -eq "$petPid" -and $ack[1] -ceq $key) { return }
     Start-Sleep -Milliseconds 40
@@ -120,6 +123,13 @@ if ($src -eq 'clear') {
   } catch {}
 }
 Remove-Item (Join-Path $dir 'collapsed.flag') -Force -ErrorAction SilentlyContinue
+$captureRecord = Read-Utf8 $file
+if ($terminalKey -and $captureRecord) {
+  $captureParts = $captureRecord -split "`t"
+  if ($captureParts.Count -ge 12 -and $captureParts[11] -ceq $terminalKey) {
+    [IO.File]::WriteAllText("$file.fgcap", "$($captureParts[4])", [Text.Encoding]::ASCII)
+  }
+}
 
 $statePath = Join-Path $dir 'pet-state.txt'
 $state = (Get-Content $statePath -ErrorAction SilentlyContinue | Select-Object -First 1)

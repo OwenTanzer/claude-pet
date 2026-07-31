@@ -90,6 +90,8 @@ public static class Lp {
     [DllImport("user32.dll")] static extern bool IsIconic(IntPtr h);
     [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+    public static IntPtr ForegroundWindow(){ try { return GetForegroundWindow(); } catch { return IntPtr.Zero; } }
+    public static int WindowProcessId(IntPtr h){ try { uint p; GetWindowThreadProcessId(h, out p); return (int)p; } catch { return 0; } }
     [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
     [DllImport("user32.dll")] static extern bool AttachThreadInput(uint a, uint b, bool attach);
     [DllImport("user32.dll")] static extern bool IsWindow(IntPtr h);
@@ -764,6 +766,27 @@ function Find-MoonTerminalTarget([int]$terminalPid, [string]$terminalKey) {
   } catch {}
   return $null
 }
+function Find-ForegroundMoonTerminalTarget([int]$terminalPid) {
+  if ($terminalPid -le 0) { return $null }
+  try {
+    $fg = [Lp]::ForegroundWindow()
+    if ($fg -eq [IntPtr]::Zero -or [Lp]::WindowProcessId($fg) -ne $terminalPid) { return $null }
+    $win = [System.Windows.Automation.AutomationElement]::FromHandle($fg)
+    if (-not $win) { return $null }
+    $tc = New-Object System.Windows.Automation.PropertyCondition(
+      [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+      [System.Windows.Automation.ControlType]::TabItem)
+    $selected = @()
+    foreach ($tab in $win.FindAll([System.Windows.Automation.TreeScope]::Descendants, $tc)) {
+      try {
+        $pat = $tab.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern)
+        if ($pat -and $pat.Current.IsSelected) { $selected += $tab }
+      } catch {}
+    }
+    if ($selected.Count -eq 1) { return @{ Window = $fg; Tab = $selected[0] } }
+  } catch {}
+  return $null
+}
 function Select-MoonTerminalTarget([string]$sid, [int]$terminalPid, [string]$terminalKey) {
   if (-not $sid -or $terminalPid -le 0 -or $terminalKey -notmatch '^[0-9a-f]{10}$') { return [IntPtr]::Zero }
   $target = $null
@@ -792,7 +815,7 @@ function Select-MoonTerminalTarget([string]$sid, [int]$terminalPid, [string]$ter
 # Capture is deliberately separate from selection: while a Claude hook holds the short
 # marker on-screen, Update-Card caches the exact AutomationElement without changing focus.
 # The ack lets the hook return as soon as that durable in-memory binding exists.
-function Capture-MoonTerminalTarget([string]$sid, [int]$claudePid, [string]$terminalKey, [string]$recordPath) {
+function Capture-MoonTerminalTarget([string]$sid, [int]$claudePid, [string]$terminalKey, [string]$recordPath, [bool]$allowForeground) {
   if (-not $sid -or $claudePid -le 0 -or $terminalKey -notmatch '^[0-9a-f]{10}$') { return $false }
   try {
     if ($script:jumpTabCache.ContainsKey($sid)) {
@@ -810,6 +833,11 @@ function Capture-MoonTerminalTarget([string]$sid, [int]$claudePid, [string]$term
     if ($script:jumpTerminalPid.ContainsKey($claudePid)) { $terminalPid = [int]$script:jumpTerminalPid[$claudePid] }
     if ($terminalPid -le 0) { return $false }
     $found = Find-MoonTerminalTarget $terminalPid $terminalKey
+    # UserPromptSubmit and SessionStart are synchronous, user-driven hooks: their
+    # owning terminal is necessarily the selected tab of the foreground Terminal
+    # window. Use that proof only when the hook wrote a matching one-shot epoch.
+    # Background/Stop/tool hooks never receive this fallback and still fail closed.
+    if (-not $found -and $allowForeground) { $found = Find-ForegroundMoonTerminalTarget $terminalPid }
     if (-not $found) { return $false }
     $script:jumpTabCache[$sid] = @{ TerminalPid = $terminalPid; Key = $terminalKey; Window = $found.Window; Tab = $found.Tab }
     $ack = "$PID`t$terminalKey"
@@ -1461,7 +1489,7 @@ function Update-Card {
     # (first-prompt title, rename lock, model badge) must survive so a revived session
     # keeps its identity; physical deletion only after 7 days of silence
     $idleMs = $now - $epoch
-    if ($idleMs -gt 604800000) { Remove-Item $f.FullName, "$($f.FullName).dismiss", "$($f.FullName).titlelock", "$($f.FullName).pending", "$($f.FullName).taback" -Force -ErrorAction SilentlyContinue; continue }
+    if ($idleMs -gt 604800000) { Remove-Item $f.FullName, "$($f.FullName).dismiss", "$($f.FullName).titlelock", "$($f.FullName).pending", "$($f.FullName).taback", "$($f.FullName).fgcap" -Force -ErrorAction SilentlyContinue; continue }
     # The hook writes the record while its unique tab marker is still visible, then waits
     # briefly for this capture. Retry only inside that event's bounded window; after it
     # expires we stop scanning rather than burning CIM/UIA work on a vanished marker.
@@ -1473,7 +1501,12 @@ function Update-Card {
       }
       if ($now -le [long]$script:jumpCaptureUntil[$f.Name]) {
         $capPid = 0; [void][int]::TryParse(($p[6] + ''), [ref]$capPid)
-        if (Capture-MoonTerminalTarget $f.Name $capPid $p[11] $f.FullName) { $script:jumpCaptureUntil[$f.Name] = 0 }
+        $fgEpoch = ((RU "$($f.FullName).fgcap") + '').Trim()
+        $allowForeground = ($fgEpoch -and $fgEpoch -eq $capEpoch)
+        if (Capture-MoonTerminalTarget $f.Name $capPid $p[11] $f.FullName $allowForeground) {
+          $script:jumpCaptureUntil[$f.Name] = 0
+          Remove-Item "$($f.FullName).fgcap" -Force -ErrorAction SilentlyContinue
+        }
       }
     }
     $jumpList += [pscustomobject]@{ sid=$f.Name; key=$p[0]; epoch=$epoch; cpid=$(if($p.Count -ge 7){$p[6]}else{''}) }

@@ -28,16 +28,25 @@ if ($jr.Count -ne 1) { Red "G3 Jump-Row not found (or dup)" } else {
 }
 # KEEP functions still DEFINED (AST), not just present as text
 $defs = @($rp.ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) | ForEach-Object { $_.Name })
-foreach ($k in 'Jump-Row','Find-HostWindow','Find-MoonTerminalTarget','Select-MoonTerminalTarget','Capture-MoonTerminalTarget','Write-JumpRequest') { if ($defs -notcontains $k) { Red "G3 required function '$k' not defined" } }
+foreach ($k in 'Jump-Row','Find-HostWindow','Find-MoonTerminalTarget','Find-ForegroundMoonTerminalTarget','Select-MoonTerminalTarget','Capture-MoonTerminalTarget','Write-JumpRequest') { if ($defs -notcontains $k) { Red "G3 required function '$k' not defined" } }
 $lpMembers = ($rp.ast.Extent.Text -match 'PickWindowForPath')
 if ($lpMembers) { Grn "G3 PickWindowForPath (multi-window) present" } else { Red "G3 PickWindowForPath vanished" }
 if ($rp.ast.Extent.Text -match "ProcessName -eq 'WindowsTerminal'[\s\S]*?return \[IntPtr\]::Zero") { Grn "G3 shared WindowsTerminal HWND is never returned blindly" } else { Red "G3 Find-HostWindow may fall back to a shared WindowsTerminal HWND" }
 if ($rp.ast.Extent.Text -match 'matches\.Count -eq 1') { Grn "G3 resolver requires one exact tab match" } else { Red "G3 resolver does not fail closed on missing/duplicate markers" }
 if ($rp.ast.Extent.Text -match 'tab captured sid=' -and $rp.ast.Extent.Text -match '\.taback') { Grn "G3 transient marker capture writes a resident-scoped ack" } else { Red "G3 capture handshake missing" }
+if ($rp.ast.Extent.Text -match 'Find-ForegroundMoonTerminalTarget' -and $rp.ast.Extent.Text -match 'WindowProcessId\(\$fg\) -ne \$terminalPid' -and $rp.ast.Extent.Text -match '\$fgEpoch -eq \$capEpoch') { Grn "G3 foreground fallback requires exact Terminal PID plus one-shot epoch" } else { Red "G3 foreground fallback is not session-gated" }
 foreach ($hook in $EV,$SS) {
   $ht = [IO.File]::ReadAllText($hook, [Text.Encoding]::UTF8)
   if ($ht -match 'function Wait-TerminalCapture' -and $ht -match 'AddMilliseconds\((1200|1600)\)') { Grn "G3 $(Split-Path $hook -Leaf) holds the marker for bounded capture" } else { Red "G3 $(Split-Path $hook -Leaf) lacks bounded capture wait" }
+  $hp = Parse $hook
+  $wait = @($hp.ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Wait-TerminalCapture' }, $true))
+  $waitCmds = @($wait | ForEach-Object { $_.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) } | ForEach-Object { $_.GetCommandName() })
+  if ($wait.Count -eq 1 -and $waitCmds -contains 'Set-TerminalMarker') { Grn "G3 $(Split-Path $hook -Leaf) reasserts the marker during capture" } else { Red "G3 $(Split-Path $hook -Leaf) lets the marker be overwritten during capture" }
 }
+$evt = [IO.File]::ReadAllText($EV, [Text.Encoding]::UTF8)
+if ($evt -match '\$Event -eq ''prompt''[\s\S]*?\$file\.fgcap') { Grn "G3 only prompt events issue foreground-capture proof" } else { Red "G3 prompt foreground-capture proof missing" }
+$sst = [IO.File]::ReadAllText($SS, [Text.Encoding]::UTF8)
+if ($sst -match '\$file\.fgcap' -and $sst -match '\$captureParts\[11\] -ceq \$terminalKey') { Grn "G3 session start issues key-matched foreground-capture proof" } else { Red "G3 session-start foreground-capture proof missing or unkeyed" }
 
 # --- G5: interrupt watch defined + reads transcript at index 8 ($p[8]) ---
 if ($defs -contains 'Test-Interrupted') { Grn "G5 Test-Interrupted defined" } else { Red "G5 Test-Interrupted gone" }

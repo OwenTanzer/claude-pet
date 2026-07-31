@@ -73,6 +73,10 @@ function Wait-TerminalCapture($key) {
   $ackPath = "$file.taback"
   $deadline = [DateTime]::UtcNow.AddMilliseconds(1200)
   do {
+    # Claude/Windows Terminal can restore the dynamic application title while this
+    # hook is still running. Reassert the marker for the whole bounded handshake so
+    # the resident's polling loop gets a real chance to observe and cache the tab.
+    Set-TerminalMarker $key
     $ack = (RU $ackPath) -split "`t"
     if ($ack.Count -ge 2 -and $ack[0] -eq "$petPid" -and $ack[1] -ceq $key) { return }
     Start-Sleep -Milliseconds 40
@@ -174,6 +178,12 @@ function WriteSession($key, $label, $title, $detail, $model, $detailAuthor) {
   $terminalKeyF = CleanRec $terminalKey
   $epoch = [long]([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())
   $rec = ($key, $label, $title, $detail, "$epoch", $model, $cp, $fp, $tpF, $cwdF, $detailAuthor, $terminalKeyF) -join "`t"
+  # A prompt hook is synchronous and user-driven: while it runs, this session's
+  # terminal tab is the foreground selection. Offer that one-shot epoch as proof
+  # for the resident's exact foreground capture fallback.
+  if ($Event -eq 'prompt' -and $terminalKeyF) {
+    [IO.File]::WriteAllText("$file.fgcap", "$epoch", [Text.Encoding]::ASCII)
+  }
   [IO.File]::WriteAllText($file, $rec, (New-Object Text.UTF8Encoding($false)))
   Wait-TerminalCapture $terminalKeyF
 }
